@@ -1,0 +1,360 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>StockAdvisor -- Paper Trading Dashboard</title>
+<style>
+  :root {
+    --bg: #0f1420; --panel: #171d2c; --panel2: #1e2536; --border: #2b3348;
+    --text: #e6e9f0; --muted: #8b93a7; --green: #3ecf8e; --red: #f0554d;
+    --amber: #e8b339; --blue: #5b8def;
+  }
+  * { box-sizing: border-box; }
+  body { background: var(--bg); color: var(--text); font-family: -apple-system, Segoe UI, Arial, sans-serif;
+         margin: 0; padding: 20px; line-height: 1.4; }
+  h1 { font-size: 20px; margin: 0 0 4px 0; }
+  h2 { font-size: 15px; margin: 0 0 10px 0; color: var(--text); }
+  .subtitle { color: var(--muted); font-size: 13px; margin-bottom: 18px; }
+  .banner { padding: 10px 14px; border-radius: 6px; margin-bottom: 16px; font-size: 13px; font-weight: 600; }
+  .banner.halt { background: #3a1620; color: var(--red); border: 1px solid var(--red); }
+  .banner.pause { background: #3a2f12; color: var(--amber); border: 1px solid var(--amber); }
+  .banner.ok { background: #12301f; color: var(--green); border: 1px solid var(--green); }
+  .grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 18px; }
+  .card { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 14px; }
+  .card .label { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .03em; }
+  .card .value { font-size: 22px; font-weight: 700; margin-top: 4px; }
+  .pos { color: var(--green); } .neg { color: var(--red); }
+  .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 16px; margin-bottom: 16px; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--border); }
+  th { color: var(--muted); font-weight: 600; font-size: 11px; text-transform: uppercase; }
+  tr:last-child td { border-bottom: none; }
+  .btn { background: var(--blue); color: white; border: none; border-radius: 5px; padding: 6px 12px;
+         font-size: 12px; cursor: pointer; margin-right: 6px; }
+  .btn.reject { background: var(--red); }
+  .btn.resume { background: var(--amber); color: #241a03; }
+  .btn.ghost { background: transparent; border: 1px solid var(--border); color: var(--text); }
+  .btn:hover { opacity: 0.85; }
+  .pill { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 600; }
+  .pill.buy { background: #12301f; color: var(--green); }
+  .pill.dial { background: #1b2540; color: var(--blue); }
+  details summary { cursor: pointer; color: var(--muted); font-size: 13px; margin: 8px 0; }
+  pre { background: #0b0f18; padding: 10px; border-radius: 6px; overflow-x: auto; font-size: 12px; }
+  .two-col { display: grid; grid-template-columns: 1.4fr 1fr; gap: 16px; }
+  .empty { color: var(--muted); font-size: 13px; font-style: italic; padding: 8px 0; }
+  canvas { width: 100%; height: 220px; }
+  .delta { font-size: 12px; color: var(--muted); }
+  .tag { font-size: 11px; padding: 1px 6px; border-radius: 4px; background: var(--panel2); color: var(--muted); margin-left: 6px; }
+  .backtest-box { margin-top: 10px; padding: 10px; background: #0b0f18; border-radius: 6px; font-size: 12px; display: none; }
+  .verdict { font-weight: 700; padding: 6px 0; }
+</style>
+</head>
+<body>
+
+<h1>StockAdvisor</h1>
+<div class="subtitle">Sector relative-strength rotation &middot; Paper trading only &middot; Every trade human-approved &middot; Running locally on this PC</div>
+
+<div id="banners"></div>
+
+<div class="grid" id="summary-cards"></div>
+
+<div class="two-col">
+  <div>
+    <div class="panel">
+      <h2>Approval Queue &mdash; Buys</h2>
+      <div id="pending-buys"></div>
+    </div>
+    <div class="panel">
+      <h2>Approval Queue &mdash; Dial Changes (self-tuning proposals)</h2>
+      <div id="pending-dials"></div>
+    </div>
+    <div class="panel">
+      <h2>Open Positions</h2>
+      <div id="positions"></div>
+    </div>
+    <div class="panel">
+      <h2>Equity Curve</h2>
+      <canvas id="equity-chart"></canvas>
+    </div>
+    <div class="panel">
+      <h2>Closed Trades</h2>
+      <div id="closed-trades"></div>
+    </div>
+  </div>
+
+  <div>
+    <div class="panel" id="brief-panel">
+      <h2>Morning Brief</h2>
+      <div id="brief-content"></div>
+    </div>
+    <div class="panel">
+      <h2>How This Works, In Plain English</h2>
+      <p style="font-size:13px">Each week (Friday), the system ranks the 11 SPDR sector ETFs by a blend of
+      3-month and 6-month momentum. It wants to hold the <b>top 3</b> sectors, but only if a sector is
+      also beating the S&amp;P 500 (SPY) and trading above its own long-term trend average -- if fewer
+      than 3 sectors qualify, the rest of the money simply stays in cash. Money is split by conviction:
+      the #1-ranked sector gets the biggest slice, decaying down the list, and no single sector can ever
+      be more than a capped share of the portfolio. The system watches daily for a reason to sell (a
+      sector falling out of favor, breaking its trend, or hitting a hard stop-loss) and acts on those
+      exits automatically -- but it <b>never buys anything without your click</b>. If the market falls
+      sharply, built-in circuit breakers pause new buys or move everything to cash automatically, and
+      only resume once conditions improve or you click Resume. Every so often the system reviews its own
+      results and may suggest one small tuning change -- again, only with your approval, and only after
+      showing you a historical backtest of the idea.</p>
+      <details>
+        <summary>Raw configuration (locked structure + live dials)</summary>
+        <pre id="raw-config"></pre>
+      </details>
+    </div>
+    <div class="panel">
+      <h2>Specs / Behavior Reference</h2>
+      <details open>
+        <summary>Risk controls</summary>
+        <ul style="font-size:12px; color:var(--muted)">
+          <li>Black-swan brake: SPY down &ge;7% in a day, or portfolio drawdown &ge;20% from peak &rarr; flattens to cash and halts new buys. Auto-resumes when SPY closes back above its 200-day average, or via manual Resume.</li>
+          <li>Early brake: SPY down &ge;5% in a day &rarr; pauses new buys only (no selling). Clears automatically on recovery.</li>
+          <li>Per-position catastrophe stop: any holding down &ge;stop% from its own entry &rarr; sold automatically.</li>
+          <li>Intraday risk overlay polls live prices every ~20s so stops/breakers react in minutes; all ranking/rebalance decisions still use daily closes only.</li>
+          <li>No margin: the book can never go cash-negative; new buy proposals are capped by cash minus already-pending proposals.</li>
+          <li>Approved buys are filled at the current market price at approval time, preserving the dollar amount budgeted.</li>
+        </ul>
+      </details>
+      <details>
+        <summary>Reflection loop</summary>
+        <ul style="font-size:12px; color:var(--muted)">
+          <li>Reviews the last N closed trades (default 5) and proposes AT MOST one change to ONE dial: trend-filter length, exit-rank hysteresis, catastrophe stop %, or position cap %.</li>
+          <li>Below the minimum sample size, it always holds -- no tuning on noise.</li>
+          <li>Every proposal can be backtested (full history + held-out out-of-sample window) before you approve it.</li>
+          <li>A dial value you've already rejected is never re-proposed.</li>
+          <li>The strategy's structure (universe, sizing, position count, cadence) is locked and cannot be changed by this loop.</li>
+        </ul>
+      </details>
+      <details>
+        <summary>Worker status</summary>
+        <div id="worker-status" style="font-size:12px; color:var(--muted)"></div>
+      </details>
+      <details>
+        <summary>Recent events log</summary>
+        <div id="events" style="font-size:12px; color:var(--muted); max-height:200px; overflow-y:auto"></div>
+      </details>
+    </div>
+  </div>
+</div>
+
+<script>
+let knownPendingIds = new Set();
+let firstLoad = true;
+
+function fmtMoney(n) { return "$" + Number(n).toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2}); }
+function fmtPct(n) { return Number(n).toFixed(2) + "%"; }
+function pnlClass(n) { return n >= 0 ? "pos" : "neg"; }
+
+async function approve(id) {
+  await fetch(`/api/approve/${id}`, {method: "POST"});
+  refresh();
+}
+async function reject(id) {
+  await fetch(`/api/reject/${id}`, {method: "POST"});
+  refresh();
+}
+async function resume() {
+  await fetch(`/api/resume`, {method: "POST"});
+  refresh();
+}
+async function runBacktest(id, btn) {
+  btn.disabled = true; btn.innerText = "Running backtest...";
+  const box = document.getElementById(`bt-${id}`);
+  box.style.display = "block";
+  box.innerText = "Running 10-15yr backtest (current vs proposed) plus out-of-sample check...";
+  try {
+    const res = await fetch(`/api/backtest_preview/${id}`);
+    const data = await res.json();
+    if (!res.ok) { box.innerText = "Backtest failed: " + (data.detail || "unknown error"); return; }
+    box.innerHTML = renderBacktest(data);
+  } catch (e) {
+    box.innerText = "Backtest failed: " + e;
+  } finally {
+    btn.disabled = false; btn.innerText = "Re-run backtest";
+  }
+}
+function renderBacktest(bt) {
+  const c = bt.current, p = bt.proposed;
+  const row = (label, cur, prop) => `<tr><td>${label}</td><td>${cur}</td><td>${prop}</td></tr>`;
+  return `
+    <div class="verdict">${bt.verdict}</div>
+    <div class="delta">Out-of-sample window starts ${bt.oos_start_date}</div>
+    <table>
+      <tr><th></th><th>Current</th><th>Proposed</th></tr>
+      ${row("Full CAGR", c.full.cagr_pct+"%", p.full.cagr_pct+"%")}
+      ${row("Full Max Drawdown", c.full.max_drawdown_pct+"%", p.full.max_drawdown_pct+"%")}
+      ${row("Full Sharpe", c.full.sharpe, p.full.sharpe)}
+      ${row("OOS CAGR", c.oos.cagr_pct+"%", p.oos.cagr_pct+"%")}
+      ${row("OOS Max Drawdown", c.oos.max_drawdown_pct+"%", p.oos.max_drawdown_pct+"%")}
+      ${row("OOS Sharpe (trust this one)", c.oos.sharpe, p.oos.sharpe)}
+      ${row("OOS Trades", c.oos.num_trades, p.oos.num_trades)}
+    </table>`;
+}
+
+function renderBanners(s) {
+  let html = "";
+  if (s.risk.halted) {
+    html += `<div class="banner halt">HALTED -- ${s.risk.halt_reason || "black-swan brake active"}
+      <button class="btn resume" style="margin-left:12px" onclick="resume()">Resume</button></div>`;
+  } else if (s.risk.pause_buys) {
+    html += `<div class="banner pause">NEW BUYS PAUSED -- ${s.risk.pause_reason || "early brake active"}
+      <button class="btn resume" style="margin-left:12px" onclick="resume()">Resume</button></div>`;
+  } else {
+    html += `<div class="banner ok">Operating normally. Paper mode only -- no real money can move.</div>`;
+  }
+  document.getElementById("banners").innerHTML = html;
+}
+
+function renderCards(s) {
+  const b = s.book;
+  const cards = [
+    ["Equity", fmtMoney(b.equity), null],
+    ["Cash", fmtMoney(b.cash), null],
+    ["Invested", fmtMoney(b.invested), null],
+    ["Return since inception", fmtPct(b.return_pct), pnlClass(b.return_pct)],
+  ];
+  document.getElementById("summary-cards").innerHTML = cards.map(([label, val, cls]) =>
+    `<div class="card"><div class="label">${label}</div><div class="value ${cls||''}">${val}</div></div>`).join("");
+}
+
+function renderPendingBuys(list) {
+  const el = document.getElementById("pending-buys");
+  if (!list.length) { el.innerHTML = `<div class="empty">No pending buy proposals.</div>`; return; }
+  el.innerHTML = list.map(p => `
+    <div style="padding:10px 0; border-bottom:1px solid var(--border)">
+      <span class="pill buy">BUY</span> <b>${p.symbol}</b> &mdash; ${fmtMoney(p.proposed_dollars)} (rank ${p.rank})
+      <div class="delta" style="margin:6px 0">${p.rationale}</div>
+      <button class="btn" onclick="approve(${p.id})">Approve</button>
+      <button class="btn reject" onclick="reject(${p.id})">Reject</button>
+    </div>`).join("");
+}
+
+function renderPendingDials(list) {
+  const el = document.getElementById("pending-dials");
+  if (!list.length) { el.innerHTML = `<div class="empty">No pending tuning proposals.</div>`; return; }
+  el.innerHTML = list.map(p => `
+    <div style="padding:10px 0; border-bottom:1px solid var(--border)">
+      <span class="pill dial">DIAL CHANGE</span> <b>${p.dial_name}</b>: ${p.dial_old_value} &rarr; ${p.dial_new_value}
+      <div class="delta" style="margin:6px 0">${p.rationale}</div>
+      <button class="btn" onclick="approve(${p.id})">Approve</button>
+      <button class="btn reject" onclick="reject(${p.id})">Reject</button>
+      <button class="btn ghost" onclick="runBacktest(${p.id}, this)">Run backtest before deciding</button>
+      <div class="backtest-box" id="bt-${p.id}"></div>
+    </div>`).join("");
+}
+
+function renderPositions(list) {
+  const el = document.getElementById("positions");
+  if (!list.length) { el.innerHTML = `<div class="empty">No open positions -- fully in cash.</div>`; return; }
+  el.innerHTML = `<table><tr><th>Symbol</th><th>Shares</th><th>Avg Cost</th><th>Price</th>
+    <th>Mkt Value</th><th>Weight</th><th>Unrealized P/L</th></tr>` +
+    list.map(p => `<tr><td>${p.symbol}</td><td>${p.shares}</td><td>${p.avg_cost}</td><td>${p.price}</td>
+      <td>${fmtMoney(p.market_value)}</td><td>${p.weight_pct}%</td>
+      <td class="${pnlClass(p.unrealized_pnl)}">${fmtMoney(p.unrealized_pnl)} (${fmtPct(p.unrealized_pnl_pct)})</td></tr>`).join("")
+    + `</table>`;
+}
+
+function renderClosedTrades(list) {
+  const el = document.getElementById("closed-trades");
+  if (!list.length) { el.innerHTML = `<div class="empty">No closed trades yet.</div>`; return; }
+  el.innerHTML = `<table><tr><th>Symbol</th><th>Entry</th><th>Exit</th><th>Reason</th><th>P/L</th><th>Closed At</th></tr>` +
+    list.slice(0,25).map(t => `<tr><td>${t.symbol}</td><td>${t.entry_price}</td><td>${t.exit_price}</td>
+      <td>${t.exit_reason}</td><td class="${pnlClass(t.pnl_dollars)}">${fmtMoney(t.pnl_dollars)} (${fmtPct(t.pnl_pct)})</td>
+      <td>${t.closed_at.slice(0,19).replace('T',' ')}</td></tr>`).join("") + `</table>`;
+}
+
+function renderBrief(brief) {
+  const el = document.getElementById("brief-content");
+  if (!brief) { el.innerHTML = `<div class="empty">No brief composed yet (composes each weekday morning).</div>`; return; }
+  const c = brief.content;
+  const d = c.deltas_vs_yesterday || {};
+  el.innerHTML = `
+    <div><b>${c.date}</b> &mdash; ${c.regime}</div>
+    <div class="delta">SPY ${c.spy.price} (${fmtPct(c.spy.day_return_pct)} today), ${c.spy.above_200dma ? "above" : "below"} its 200dma</div>
+    <div class="delta">Equity ${fmtMoney(c.equity_snapshot.equity)} ${d.equity_change != null ? `(change vs yesterday: ${fmtMoney(d.equity_change)}, ${fmtPct(d.equity_change_pct)})` : ""}</div>
+    <div style="margin-top:8px"><b>Momentum leaders:</b> ${c.momentum_leaders.map(l => `${l.symbol} (#${l.rank}${l.qualifies?", qualifies":""})`).join(", ")}</div>
+    ${d.leaders_in && d.leaders_in.length ? `<div class="delta">New to leaders: ${d.leaders_in.join(", ")}</div>` : ""}
+    ${d.leaders_out && d.leaders_out.length ? `<div class="delta">Dropped from leaders: ${d.leaders_out.join(", ")}</div>` : ""}
+    <div style="margin-top:8px">Next rebalance: ${c.next_rebalance}</div>
+    ${d.trades_closed_since && d.trades_closed_since.length ? `<div style="margin-top:8px"><b>Closed since yesterday:</b> ${d.trades_closed_since.map(t=>`${t.symbol} ${fmtPct(t.pnl_pct)}`).join(", ")}</div>` : ""}
+  `;
+}
+
+function renderEquityChart(history) {
+  const canvas = document.getElementById("equity-chart");
+  const ctx = canvas.getContext("2d");
+  const dpr = window.devicePixelRatio || 1;
+  const w = canvas.clientWidth || 600, h = 220;
+  canvas.width = w * dpr; canvas.height = h * dpr;
+  ctx.scale(dpr, dpr);
+  ctx.clearRect(0,0,w,h);
+  if (!history.length) {
+    ctx.fillStyle = "#8b93a7"; ctx.font = "13px sans-serif";
+    ctx.fillText("No equity history yet -- builds up once the worker has run for a day.", 10, h/2);
+    return;
+  }
+  const values = history.map(r => r.equity);
+  const min = Math.min(...values), max = Math.max(...values);
+  const pad = 10;
+  const xStep = (w - pad*2) / Math.max(1, history.length - 1);
+  ctx.strokeStyle = "#5b8def"; ctx.lineWidth = 2; ctx.beginPath();
+  history.forEach((r, i) => {
+    const x = pad + i * xStep;
+    const y = h - pad - ((r.equity - min) / Math.max(1, (max - min))) * (h - pad*2);
+    if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+  });
+  ctx.stroke();
+}
+
+function renderWorkerStatus(s) {
+  document.getElementById("worker-status").innerHTML =
+    `Status: ${s.worker.status} <br> Last heartbeat: ${s.worker.last_heartbeat || "n/a"} <br> Started: ${s.worker.started_at || "n/a"} <br>
+     Reflection mode: ${s.reflection_mode} (every ${s.reflection_every_n_trades} closed trades)`;
+}
+
+function renderEvents(list) {
+  document.getElementById("events").innerHTML = list.map(e =>
+    `<div>[${e.created_at.slice(0,19).replace('T',' ')}] ${e.level}: ${e.message}</div>`).join("");
+}
+
+function checkForNewApprovals(s) {
+  const allPending = [...s.pending_buys, ...s.pending_dial_changes];
+  const currentIds = new Set(allPending.map(p => p.id));
+  if (!firstLoad) {
+    for (const id of currentIds) {
+      if (!knownPendingIds.has(id)) {
+        alert("StockAdvisor: a new item needs your approval on the dashboard.");
+        break;
+      }
+    }
+  }
+  knownPendingIds = currentIds;
+  firstLoad = false;
+}
+
+async function refresh() {
+  const res = await fetch("/api/state");
+  const s = await res.json();
+  renderBanners(s);
+  renderCards(s);
+  renderPendingBuys(s.pending_buys);
+  renderPendingDials(s.pending_dial_changes);
+  renderPositions(s.positions);
+  renderClosedTrades(s.closed_trades);
+  renderBrief(s.brief);
+  renderEquityChart(s.equity_history);
+  renderWorkerStatus(s);
+  renderEvents(s.events);
+  document.getElementById("raw-config").innerText = JSON.stringify({locked_structure: s.locked_structure, live_dials: s.dials, dial_bounds: s.dial_bounds}, null, 2);
+  checkForNewApprovals(s);
+}
+
+refresh();
+setInterval(refresh, 8000);
+</script>
+</body>
+</html>
