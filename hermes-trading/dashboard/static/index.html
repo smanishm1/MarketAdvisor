@@ -1,0 +1,650 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>hermes-trading · dashboard</title>
+<style>
+  :root {
+    --bg:#0d1117; --panel:#161b22; --border:#30363d; --fg:#e6edf3;
+    --muted:#8b949e; --green:#3fb950; --red:#f85149; --yellow:#d29922;
+    --blue:#58a6ff; --cyan:#39c5cf;
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg);
+    font:14px/1.5 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; }
+  header { display:flex; gap:18px; align-items:center; flex-wrap:wrap;
+    padding:14px 20px; border-bottom:1px solid var(--border); background:var(--panel); }
+  header h1 { font-size:15px; margin:0; color:var(--cyan); letter-spacing:.5px; }
+  .stat { display:flex; flex-direction:column; }
+  .stat .k { font-size:11px; color:var(--muted); text-transform:uppercase; }
+  .stat .v { font-size:16px; font-weight:600; }
+  .dot { width:9px; height:9px; border-radius:50%; display:inline-block; margin-right:6px; }
+  .ok{background:var(--green);} .stale{background:var(--red);}
+  main { padding:20px; display:grid; gap:18px; grid-template-columns:1fr 1fr; max-width:1200px; }
+  .col-span { grid-column:1 / -1; }
+  .panel { background:var(--panel); border:1px solid var(--border); border-radius:8px; padding:14px 16px; }
+  .panel h2 { font-size:12px; text-transform:uppercase; color:var(--muted);
+    margin:0 0 10px; letter-spacing:.6px; }
+  table { width:100%; border-collapse:collapse; font-size:13px; }
+  th,td { text-align:right; padding:6px 8px; border-bottom:1px solid var(--border); }
+  th:first-child,td:first-child { text-align:left; }
+  th { color:var(--muted); font-weight:500; }
+  .pos { color:var(--green); } .neg { color:var(--red); }
+  .pill { padding:1px 7px; border-radius:10px; font-size:11px; }
+  button { cursor:pointer; border:1px solid var(--border); border-radius:6px;
+    padding:5px 12px; font:inherit; font-size:12px; color:var(--fg); background:#21262d; }
+  button.approve { border-color:var(--green); color:var(--green); }
+  button.reject  { border-color:var(--red);  color:var(--red); }
+  button:hover { filter:brightness(1.3); }
+  select { font:inherit; font-size:12px; color:var(--fg); background:#21262d;
+    border:1px solid var(--border); border-radius:6px; padding:4px 8px; }
+  .ctrl { display:flex; align-items:center; gap:7px; }
+  .ctrls { display:flex; gap:22px; align-items:center; flex-wrap:wrap; }
+  .queue-item { border:1px solid var(--border); border-radius:8px; padding:12px;
+    margin-bottom:10px; background:#11161d; }
+  .queue-item.empty { color:var(--muted); border-style:dashed; text-align:center; }
+  .queue-head { display:flex; justify-content:space-between; align-items:center; gap:10px; }
+  .queue-actions { display:flex; gap:8px; }
+  .muted { color:var(--muted); }
+  .english { font-size:14px; line-height:1.6; margin:0; }
+  .english b { color:var(--fg); }
+  canvas { width:100%; height:160px; display:block; }
+  code { background:#0d1117; padding:1px 5px; border-radius:4px; color:var(--cyan); }
+  .badge { font-size:11px; color:var(--yellow); }
+  details summary { cursor:pointer; font-size:11px; margin-top:8px; }
+  pre { margin:6px 0 0; }
+  .brief-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(280px,1fr));
+    gap:12px; margin-top:10px; }
+  .brief-sec { background:#11161d; border:1px solid var(--border); border-radius:8px; padding:10px 12px; }
+  .brief-title { font-size:11px; text-transform:uppercase; color:var(--muted);
+    letter-spacing:.6px; margin-bottom:6px; }
+  .brief-line { font-size:13px; line-height:1.55; }
+  #toasts { position:fixed; top:16px; right:16px; z-index:50; display:flex;
+    flex-direction:column; gap:8px; max-width:360px; }
+  .toast { background:var(--panel); border:1px solid var(--border); border-left-width:4px;
+    border-radius:6px; padding:10px 14px; font-size:13px; box-shadow:0 4px 14px rgba(0,0,0,.4);
+    animation:toastIn .15s ease-out; }
+  .toast.hold { border-left-color:var(--yellow); }
+  .toast.proposed { border-left-color:var(--green); }
+  .toast .t-title { font-weight:600; margin-bottom:2px; }
+  .toast.hold .t-title { color:var(--yellow); }
+  .toast.proposed .t-title { color:var(--green); }
+  .toast .t-body { color:var(--muted); }
+  @keyframes toastIn { from{opacity:0; transform:translateX(12px);} to{opacity:1; transform:none;} }
+</style>
+</head>
+<body>
+<div id="toasts"></div>
+<header>
+  <h1>hermes-trading</h1>
+  <div class="stat"><span class="k">worker</span><span class="v" id="hb">—</span></div>
+  <div class="stat"><span class="k" id="sym">price</span><span class="v" id="price">—</span></div>
+  <div class="stat"><span class="k">equity</span><span class="v" id="equity">—</span></div>
+  <div class="stat"><span class="k">invested</span><span class="v" id="invested">—</span></div>
+  <div class="stat"><span class="k">cash</span><span class="v" id="cash">—</span></div>
+  <div class="stat"><span class="k">return</span><span class="v" id="ret">—</span></div>
+  <div class="stat"><span class="k">score</span><span class="v" id="score">—</span></div>
+  <div class="stat"><span class="k">mode</span><span class="v" style="color:var(--yellow)">PAPER</span></div>
+</header>
+
+<main>
+  <section class="panel col-span" id="riskBanner"
+    style="display:none; border-color:var(--red); background:#2d1418">
+    <div style="display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap">
+      <div><b style="color:var(--red)">⛔ RISK-OFF — black-swan brake tripped.</b>
+        <span id="riskReason" class="muted"></span>
+        <span class="muted">New buys are halted and positions were flattened to cash.</span></div>
+      <button onclick="clearRiskOff()">Resume trading</button>
+    </div>
+  </section>
+
+  <section class="panel col-span" id="haltBanner"
+    style="display:none; border-color:var(--yellow,#d29922); background:#2d2410">
+    <div><b style="color:var(--yellow,#d29922)">⚠️ EARLY BRAKE — new buys paused.</b>
+      <span id="haltReason" class="muted"></span>
+      <span class="muted">Holdings are unchanged; this pauses adding risk on a sharp down day, ahead of the −7% flatten level. Clears automatically when SPY recovers.</span></div>
+  </section>
+
+  <section class="panel col-span">
+    <div style="display:flex; justify-content:space-between; align-items:center; gap:10px">
+      <h2 style="margin:0">Morning brief <span class="badge" id="briefDate"></span></h2>
+      <button id="briefBtn" onclick="briefNow()">Brief now</button>
+    </div>
+    <div id="brief" style="margin-top:10px"></div>
+  </section>
+
+  <section class="panel col-span">
+    <h2>Controls &amp; alerts</h2>
+    <div class="ctrls">
+      <label class="ctrl">
+        <input type="checkbox" id="autoReflect" onchange="setAuto(this.checked)">
+        Auto-reflect every N closed trades
+      </label>
+      <label class="ctrl">
+        <input type="checkbox" id="fastExits" onchange="setFast(this.checked)">
+        Fast exits (sell faders daily; buys weekly)
+      </label>
+      <label class="ctrl">Brain:
+        <select id="reflectMode" onchange="setMode(this.value)">
+          <option value="hermes">hermes (Claude)</option>
+          <option value="fallback">fallback (deterministic)</option>
+        </select>
+      </label>
+      <button id="reflectBtn" onclick="reflectNow()">Reflect now</button>
+      <button id="alertBtn" onclick="enableAlerts()">🔔 Enable alerts</button>
+      <span class="muted" id="alertState">alerts: off</span>
+    </div>
+    <div class="muted" id="reflInfo" style="margin-top:8px"></div>
+  </section>
+
+  <section class="panel col-span">
+    <h2>Pending trade approvals <span class="badge" id="ptCount"></span></h2>
+    <div id="pendingTrades"></div>
+  </section>
+
+  <section class="panel col-span">
+    <h2>Pending strategy changes <span class="badge" id="psCount"></span></h2>
+    <div id="pendingStrategy"></div>
+  </section>
+
+  <section class="panel">
+    <h2>Equity curve</h2>
+    <canvas id="curve" width="560" height="160"></canvas>
+  </section>
+
+  <section class="panel">
+    <h2>Open positions</h2>
+    <table id="openTbl"><thead><tr>
+      <th>sym</th><th>opened</th><th>size</th><th>value</th><th>entry</th><th>last</th><th>stop</th><th>target</th><th>unreal</th>
+    </tr></thead><tbody></tbody></table>
+  </section>
+
+  <section class="panel col-span">
+    <h2>vs S&amp;P 500 · invested windows only</h2>
+    <div id="spyCompare"></div>
+  </section>
+
+  <section class="panel col-span">
+    <h2>Closed trades</h2>
+    <table id="closedTbl"><thead><tr>
+      <th>sym</th><th>opened</th><th>closed</th><th>entry</th><th>exit</th><th>reason</th><th>pnl</th><th>pnl %</th><th>ver</th>
+    </tr></thead><tbody></tbody></table>
+  </section>
+
+  <section class="panel col-span">
+    <h2>Journal · strategy memory</h2>
+    <div id="journal"></div>
+  </section>
+
+  <section class="panel">
+    <h2>Current strategy</h2>
+    <p id="strategy" class="english"></p>
+    <details><summary class="muted">raw yaml/json</summary><pre id="strategyRaw" class="muted"></pre></details>
+  </section>
+
+  <section class="panel">
+    <h2>Goal</h2>
+    <p id="goal" class="english"></p>
+    <details><summary class="muted">raw yaml/json</summary><pre id="goalRaw" class="muted"></pre></details>
+  </section>
+
+  <section class="panel col-span">
+    <h2>How this works · specs</h2>
+    <details open><summary class="muted">show / hide</summary>
+      <div id="specs" style="margin-top:10px"></div>
+    </details>
+  </section>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const money = (n) => (n==null?"—":"$"+Number(n).toLocaleString(undefined,{maximumFractionDigits:2}));
+const pct = (n) => (n==null?"—":(n*100).toFixed(2)+"%");
+const cls = (n) => (n>0?"pos":(n<0?"neg":""));
+// epoch seconds -> compact local date+time (e.g. "Jun 26, 02:14"); — for missing
+const fmtTs = (s) => (s==null ? "—" : new Date(s*1000).toLocaleString(undefined,
+  {month:"short", day:"numeric", hour:"2-digit", minute:"2-digit"}));
+
+async function post(url){ await fetch(url,{method:"POST"}); refresh(); }
+async function postJSON(url, body){
+  await fetch(url,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
+  refresh();
+}
+function setAuto(on){ postJSON("/api/settings",{auto_reflect:on}); }
+function setMode(m){ postJSON("/api/settings",{reflect_mode:m}); }
+function setFast(on){ postJSON("/api/settings",{fast_exits:on}); }
+function showToast(title, body, kind){
+  const el = document.createElement("div");
+  el.className = "toast " + (kind||"");
+  el.innerHTML = `<div class="t-title">${title}</div>` + (body?`<div class="t-body">${body}</div>`:"");
+  $("toasts").appendChild(el);
+  setTimeout(()=>{ el.style.transition="opacity .3s"; el.style.opacity="0";
+    setTimeout(()=>el.remove(), 300); }, 7000);
+}
+
+let reflectAwaiting = false;   // user clicked Reflect now; waiting for a fresh result
+async function reflectNow(){
+  const btn = $("reflectBtn");
+  btn.disabled = true; btn.textContent = "Reflecting…";
+  reflectAwaiting = true;
+  try { await fetch("/api/reflect-now",{method:"POST"}); } catch(e){}
+  setTimeout(refresh, 400);   // polling will track progress + re-enable
+}
+async function clearRiskOff(){
+  try { await fetch("/api/risk-off/clear",{method:"POST"}); } catch(e){}
+  setTimeout(refresh, 300);
+}
+async function briefNow(){
+  const btn = $("briefBtn");
+  btn.disabled = true; btn.textContent = "Generating…";
+  try { await fetch("/api/brief-now",{method:"POST"}); } catch(e){}
+  setTimeout(refresh, 400);   // polling re-enables once the worker thread finishes
+}
+
+/* ---------- alerts: sound + desktop notification + title badge ---------- */
+let alertsOn = false, audioCtx = null;
+const knownPending = new Set();
+let baselineSet = false;
+let reflTsSeen = null;   // last reflection timestamp we've toasted/seen (null = not yet baselined)
+
+function enableAlerts(){
+  alertsOn = true;
+  $("alertState").textContent = "alerts: on";
+  try { audioCtx = audioCtx || new (window.AudioContext||window.webkitAudioContext)(); audioCtx.resume(); } catch(e){}
+  if ("Notification" in window && Notification.permission !== "granted") Notification.requestPermission();
+  playBeep();  // confirmation chirp
+}
+function playBeep(){
+  if(!audioCtx) return;
+  const o = audioCtx.createOscillator(), g = audioCtx.createGain();
+  o.type = "sine"; o.frequency.value = 880;
+  o.connect(g); g.connect(audioCtx.destination);
+  g.gain.setValueAtTime(0.0001, audioCtx.currentTime);
+  g.gain.exponentialRampToValueAtTime(0.25, audioCtx.currentTime+0.01);
+  g.gain.exponentialRampToValueAtTime(0.0001, audioCtx.currentTime+0.25);
+  o.start(); o.stop(audioCtx.currentTime+0.26);
+}
+function notify(body){
+  if(!alertsOn) return;
+  playBeep();
+  if("Notification" in window && Notification.permission==="granted"){
+    try { new Notification("hermes-trading", {body}); } catch(e){}
+  }
+}
+
+function tradeContextHtml(ctx){
+  if(!ctx) return "";
+  const parts = [];
+  if(ctx.rank) parts.push(`momentum rank <b>#${ctx.rank}</b> of ${ctx.of||"—"}`);
+  if(ctx.score!=null) parts.push(`score ${(ctx.score*100).toFixed(1)}%`
+    + (ctx.bench_score!=null ? ` vs SPY ${(ctx.bench_score*100).toFixed(1)}%` : ""));
+  if(ctx.is_stock) parts.push('<span class="badge">single stock — tighter cap, wider stop</span>');
+  parts.push(ctx.last_exit
+    ? `last round-trip: <b class="${cls(ctx.last_exit.pnl_pct)}">${pct(ctx.last_exit.pnl_pct)}</b>`
+      + ` (${ctx.last_exit.exit_reason||"—"}, ${fmtTs(ctx.last_exit.exit_ts)})`
+    : "first time holding this name");
+  return `<div class="muted" style="margin-top:6px">${parts.join(" · ")}</div>`;
+}
+function renderPendingTrades(items){
+  $("ptCount").textContent = items.length ? items.length+" awaiting" : "";
+  const box = $("pendingTrades");
+  if(!items.length){ box.innerHTML = '<div class="queue-item empty">No trades awaiting approval.</div>'; return; }
+  box.innerHTML = items.map(t => `
+    <div class="queue-item">
+      <div class="queue-head">
+        <div><b>${t.symbol}</b> ${t.side} · ${Number(t.size).toFixed(6)} @ ${money(t.price)}
+          <span class="muted">· RSI ${t.rsi==null?"—":Number(t.rsi).toFixed(1)}
+          · stop ${money(t.stop_price)} · target ${money(t.target_price)} · v${t.strategy_version}
+          · proposed ${fmtTs(t.proposed_ts)}</span></div>
+        <div class="queue-actions">
+          <button class="approve" onclick="post('/api/trades/${t.id}/approve')">Approve</button>
+          <button class="reject"  onclick="post('/api/trades/${t.id}/reject')">Reject</button>
+        </div>
+      </div>
+      ${tradeContextHtml(t.context)}
+    </div>`).join("");
+}
+
+function renderBrief(b, briefing){
+  const btn = $("briefBtn");
+  if(btn && !briefing){ btn.disabled = false; btn.textContent = "Brief now"; }
+  else if(btn){ btn.disabled = true; btn.textContent = "Generating…"; }
+  $("briefDate").textContent = b ? `${b.date} · generated ${fmtTs(b.ts)}` : "";
+  const box = $("brief");
+  if(!b){
+    box.innerHTML = '<div class="queue-item empty">No brief yet — one is generated each morning while the worker runs, or click Brief now.</div>';
+    return;
+  }
+  box.innerHTML = `<div style="font-size:14px"><b>${b.headline||""}</b></div>`
+    + '<div class="brief-grid">'
+    + (b.sections||[]).map(s =>
+        `<div class="brief-sec"><div class="brief-title">${s.title}</div>`
+        + (s.lines||[]).map(l=>`<div class="brief-line">${l}</div>`).join("")
+        + `</div>`).join("")
+    + '</div>';
+}
+
+function renderSpyCompare(sc){
+  const box = $("spyCompare");
+  if(!box) return;
+  if(!sc){ box.innerHTML = '<div class="muted">no data yet</div>'; return; }
+  const t = sc.total||{}, c = sc.closed||{}, o = sc.open||{};
+  const P = (x)=> x==null ? "—" : ((x*100).toFixed(2)+"%");
+  let html = `<p class="english" style="margin-bottom:10px">
+    Same dollars in <b>SPY</b>, same holding windows — SPY only competes <b>while a position is open</b>;
+    cash periods count for neither side. This isolates <i>selection skill</i>; the backtest's
+    buy-&amp;-hold column stays the whole-strategy benchmark.
+    <span class="muted">(price-only SPY quotes — understates SPY by ~0.1%/month held)</span></p>`;
+  html += `<div style="font-size:15px; margin-bottom:10px">
+    Strategy <b class="${cls(t.strategy_pnl)}">${money(t.strategy_pnl)} (${P(t.strategy_pct)})</b>
+    vs shadow SPY <b class="${cls(t.spy_pnl)}">${money(t.spy_pnl)} (${P(t.spy_pct)})</b>
+    → alpha <b class="${cls(t.alpha_pct)}">${t.alpha_pct>=0?"+":""}${(t.alpha_pct*100).toFixed(2)} pp</b></div>`;
+  if(c.n) html += `<div class="muted" style="margin-bottom:8px">Closed trades: <b>${c.n_beat}</b> of <b>${c.n}</b> beat SPY over their own window
+    (realised ${money(c.strategy_pnl)} vs SPY ${money(c.spy_pnl)}).</div>`;
+  else html += `<div class="muted" style="margin-bottom:8px">No closed trades with SPY snapshots yet.</div>`;
+  const openRows = o.rows||[];
+  if(openRows.length){
+    html += `<table style="margin-bottom:6px"><thead><tr>
+      <th>open position</th><th>since entry</th><th>SPY same window</th><th>vs SPY</th></tr></thead><tbody>`
+      + openRows.map(r=>`<tr><td>${r.symbol} <span class="muted">${fmtTs(r.entry_ts)}</span></td>
+        <td class="${cls(r.pnl_pct)}">${P(r.pnl_pct)}</td>
+        <td class="${cls(r.spy_pct)}">${P(r.spy_pct)}</td>
+        <td class="${cls(r.alpha_pct)}"><b>${r.alpha_pct==null?"—":(r.alpha_pct>=0?"+":"")+(r.alpha_pct*100).toFixed(2)+" pp"}</b></td></tr>`).join("")
+      + '</tbody></table>';
+  }
+  const closedRows = c.rows||[];
+  if(closedRows.length){
+    html += `<details><summary class="muted">recent closed trades vs SPY (${closedRows.length})</summary>
+      <table style="margin-top:6px"><thead><tr>
+      <th>closed trade</th><th>reason</th><th>pnl %</th><th>SPY same window</th><th>vs SPY</th></tr></thead><tbody>`
+      + closedRows.map(r=>`<tr><td>${r.symbol} <span class="muted">${fmtTs(r.exit_ts)}</span></td>
+        <td class="muted">${r.exit_reason||""}</td>
+        <td class="${cls(r.pnl_pct)}">${P(r.pnl_pct)}</td>
+        <td class="${cls(r.spy_pct)}">${P(r.spy_pct)}</td>
+        <td class="${cls(r.alpha_pct)}"><b>${(r.alpha_pct>=0?"+":"")+(r.alpha_pct*100).toFixed(2)} pp</b></td></tr>`).join("")
+      + '</tbody></table></details>';
+  }
+  if(sc.skipped) html += `<div class="muted" style="margin-top:6px">${sc.skipped} trade(s) without SPY snapshots are excluded from both sides.</div>`;
+  box.innerHTML = html;
+}
+
+function renderJournal(m){
+  const box = $("journal");
+  if(!m){ box.innerHTML = '<div class="muted">no memory yet</div>'; return; }
+  const vp = m.version_performance||[], lin = m.strategy_lineage||[], refl = m.reflections||[];
+  let html = "";
+  html += '<div class="brief-title">Performance by strategy version</div>';
+  html += vp.length
+    ? '<table><thead><tr><th>version</th><th>trades</th><th>win rate</th><th>avg pnl %</th><th>total pnl</th></tr></thead><tbody>'
+      + vp.map(v=>`<tr><td>v${v.version}</td><td>${v.n_trades}</td><td>${(v.win_rate*100).toFixed(0)}%</td>
+          <td class="${cls(v.avg_pnl_pct)}">${pct(v.avg_pnl_pct)}</td>
+          <td class="${cls(v.total_pnl)}">${money(v.total_pnl)}</td></tr>`).join("")
+      + '</tbody></table>'
+    : '<div class="muted">no closed trades yet</div>';
+  html += '<div class="brief-title" style="margin-top:12px">Strategy lineage (applied &amp; rejected changes)</div>';
+  html += lin.length
+    ? lin.map(c=>`<div class="brief-line">${fmtTs(c.proposed_ts)} · v${c.from_version}→v${c.to_version}
+        <code>${c.variable}</code> ${c.old_value} → <b>${c.new_value}</b>
+        — <span class="${c.status==='applied'?'pos':'neg'}">${c.status}</span>
+        <span class="muted">${c.rationale||""}</span></div>`).join("")
+    : '<div class="muted">no strategy changes yet</div>';
+  html += '<div class="brief-title" style="margin-top:12px">Recent reflection decisions</div>';
+  html += refl.length
+    ? refl.map(r=>`<div class="brief-line"><span class="pill" style="background:#21262d">${r.source||""}</span>
+        ${r.decision==="hold" ? "held" : `proposed <code>${r.variable}</code>`}
+        <span class="muted">${r.rationale||""}</span></div>`).join("")
+    : '<div class="muted">no reflections yet</div>';
+  box.innerHTML = html;
+}
+
+async function backtestStrategy(id){
+  try { await fetch(`/api/strategy/${id}/backtest`,{method:"POST"}); } catch(e){}
+  setTimeout(refresh, 400);
+}
+function btHtml(s, running){
+  if(running) return '<div class="muted" style="margin-top:8px">Backtesting 10y… (~30s)</div>';
+  let bt=null; try { bt = s.backtest_json ? JSON.parse(s.backtest_json) : null; } catch(e){}
+  if(!bt) return `<div style="margin-top:8px"><button onclick="backtestStrategy(${s.id})">Backtest this change (10y)</button></div>`;
+  if(bt.error) return `<div class="neg" style="margin-top:8px">backtest: ${bt.error}</div>`;
+  const c=bt.current, p=bt.proposed, P=(x)=>(x*100).toFixed(1)+"%";
+  let html = `<div style="margin-top:8px" class="muted">
+    Full ${bt.start}→${bt.end} (current → proposed):
+    CAGR ${P(c.cagr)}→<b class="${cls(p.cagr-c.cagr)}">${P(p.cagr)}</b> ·
+    maxDD ${P(c.max_drawdown)}→<b class="${cls(p.max_drawdown-c.max_drawdown)}">${P(p.max_drawdown)}</b> ·
+    Sharpe ${c.sharpe.toFixed(2)}→<b class="${cls(p.sharpe-c.sharpe)}">${p.sharpe.toFixed(2)}</b>
+  </div>`;
+  if(bt.current_oos && bt.proposed_oos){
+    const co=bt.current_oos, po=bt.proposed_oos, better = po.sharpe>co.sharpe;
+    html += `<div style="margin-top:4px" class="${better?'pos':'neg'}">
+      <b>Out-of-sample</b> (held out from ${bt.oos_start} — the trustworthy test):
+      CAGR ${P(co.cagr)}→<b>${P(po.cagr)}</b> · maxDD ${P(co.max_drawdown)}→<b>${P(po.max_drawdown)}</b> ·
+      Sharpe ${co.sharpe.toFixed(2)}→<b>${po.sharpe.toFixed(2)}</b> —
+      ${better ? "holds up out-of-sample ✓" : "does NOT improve OOS ✗ (likely overfit — reject)"}
+    </div>`;
+  }
+  return html;
+}
+function renderPendingStrategy(items, backtesting){
+  $("psCount").textContent = items.length ? items.length+" awaiting" : "";
+  const box = $("pendingStrategy");
+  if(!items.length){ box.innerHTML = '<div class="queue-item empty">No strategy changes awaiting approval.</div>'; return; }
+  box.innerHTML = items.map(s => `
+    <div class="queue-item">
+      <div class="queue-head">
+        <div><span class="pill" style="background:#21262d">${s.source}</span>
+          <code>${s.variable}</code> ${s.old_value} → <b>${s.new_value}</b>
+          <span class="muted">· v${s.from_version} → v${s.to_version}</span></div>
+        <div class="queue-actions">
+          <button class="approve" onclick="post('/api/strategy/${s.id}/approve')">Approve</button>
+          <button class="reject"  onclick="post('/api/strategy/${s.id}/reject')">Reject</button>
+        </div>
+      </div>
+      <div class="muted" style="margin-top:6px">${s.rationale||""}</div>
+      ${btHtml(s, (backtesting||[]).indexOf(s.id) >= 0)}
+    </div>`).join("");
+}
+
+function renderOpen(rows){
+  const b = $("openTbl").querySelector("tbody");
+  b.innerHTML = rows.length ? rows.map(p => {
+    const tgt = (p.target_price && p.target_price < p.entry_price*50) ? money(p.target_price) : "—";
+    return `<tr><td>${p.symbol}</td><td class="muted">${fmtTs(p.entry_ts)}</td><td>${Number(p.size).toFixed(4)}</td>
+    <td>${money(p.value)} <span class="muted">${((p.weight||0)*100).toFixed(0)}%</span></td>
+    <td>${money(p.entry_price)}</td><td>${money(p.last)}</td><td>${money(p.stop_price)}</td>
+    <td>${tgt}</td>
+    <td class="${cls(p.unrealised)}">${p.unrealised==null ? "—" : `${money(p.unrealised)} <span class="muted">${p.unrealised_pct>=0?"+":""}${(p.unrealised_pct*100).toFixed(1)}%</span>`}</td></tr>`;
+  }).join("")
+    : '<tr><td colspan="9" class="muted">none</td></tr>';
+}
+
+function renderClosed(rows){
+  const b = $("closedTbl").querySelector("tbody");
+  b.innerHTML = rows.length ? rows.map(t => `
+    <tr><td>${t.symbol}</td><td class="muted">${fmtTs(t.entry_ts)}</td><td class="muted">${fmtTs(t.exit_ts)}</td>
+    <td>${money(t.entry_price)}</td><td>${money(t.exit_price)}</td>
+    <td class="muted">${t.exit_reason||""}</td>
+    <td class="${cls(t.pnl)}">${money(t.pnl)}</td>
+    <td class="${cls(t.pnl)}">${pct(t.pnl_pct)}</td><td class="muted">v${t.strategy_version}</td></tr>`).join("")
+    : '<tr><td colspan="9" class="muted">none yet</td></tr>';
+}
+
+function drawCurve(points){
+  const c = $("curve"), ctx = c.getContext("2d");
+  const W = c.width, H = c.height; ctx.clearRect(0,0,W,H);
+  if(points.length < 2){ ctx.fillStyle="#8b949e"; ctx.fillText("waiting for equity snapshots…",12,24); return; }
+  const ys = points.map(p=>p.equity);
+  const min = Math.min(...ys), max = Math.max(...ys), pad = (max-min)*0.1 || 1;
+  const lo = min-pad, hi = max+pad;
+  const x = (i)=> (i/(points.length-1))*(W-8)+4;
+  const y = (v)=> H-4-((v-lo)/(hi-lo))*(H-8);
+  ctx.strokeStyle = ys[ys.length-1] >= ys[0] ? "#3fb950" : "#f85149";
+  ctx.lineWidth = 2; ctx.beginPath();
+  points.forEach((p,i)=>{ i?ctx.lineTo(x(i),y(p.equity)):ctx.moveTo(x(i),y(p.equity)); });
+  ctx.stroke();
+}
+
+function strategyEnglish(s, g){
+  if(!s) return "";
+  if(s.type === "relative_strength_rotation"){
+    const lb = (s.momentum_lookbacks_days||[]).join(" & ");
+    const each = (100/(s.max_positions||3)).toFixed(0);
+    const nStocks = (s.stocks||[]).length;
+    const nEtfs = (s.universe||[]).length - nStocks;
+    const mix = nStocks
+      ? `<b>${nEtfs} ETFs + ${nStocks} individual stocks</b>`
+      : `<b>${(s.universe||[]).length} ETFs</b>`;
+    const sizing = (s.sizing === "rank_weight")
+      ? `Sized by <b>conviction</b>: the #1-ranked name gets the biggest slice, decaying down the list (cap ${s.position_notional_cap_pct}%); the capped overflow and any unfilled slot stay in <b>cash</b>. `
+      : `Equal-weight (~${each}% each, cap ${s.position_notional_cap_pct}%); any unfilled slot stays in <b>cash</b>. `;
+    const stockRules = nStocks
+      ? `Single stocks carry their own risk rules: cap <b>${s.stock_notional_cap_pct}%</b>, stop <b>−${s.stock_catastrophe_stop_pct}%</b>, at most <b>${s.max_stock_positions}</b> of the ${s.hold_top_n} slots. `
+      : "";
+    return `Rotate among ${mix}. Each week, rank them by momentum (${lb}-day blend) `
+      + `and hold the <b>top ${s.hold_top_n}</b> that both beat <b>${s.benchmark}</b> and sit above their own <b>${s.trend_sma_days}-day</b> average. `
+      + sizing + stockRules
+      + `Sell when a holding drops out of the top <b>${s.exit_rank_n}</b> or below its ${s.trend_sma_days}-day average; `
+      + `catastrophe stop at <b>−${s.catastrophe_stop_pct}%</b>. <span class="muted">(version ${s.version})</span>`;
+  }
+  const e = s.entry||{};
+  const asset = (g && g.asset) ? g.asset : "the asset";
+  const ind = (e.indicator||"rsi").toUpperCase();
+  return `Trade <b>${asset}</b>, ${e.direction||"long"} only. `
+    + `Enter when <b>${ind}(${e.period||14})</b> drops below <b>${e.threshold}</b> (oversold). `
+    + `Size each trade at <b>${(s.position_size_r*100).toFixed(0)}%</b> of current equity. `
+    + `Then take profit at <b>+${s.take_profit_pct}%</b> or cut the loss at <b>−${s.stop_loss_pct}%</b>, whichever hits first. `
+    + `<span class="muted">(version ${s.version})</span>`;
+}
+function goalEnglish(g){
+  if(!g) return "";
+  return `Success is <b>+${(g.target_return_30d*100).toFixed(1)}%</b> in 30 days. `
+    + `Failure is a <b>${(g.max_drawdown*100).toFixed(1)}%</b> drawdown — the line not to cross. `
+    + `Quality bar: Sharpe ≥ <b>${g.min_sharpe}</b>. `
+    + `Every <b>${g.reflection_every}</b> closed trades, reflect and change <b>one</b> variable.`;
+}
+
+// Specs panel — renders from live config so the numbers stay accurate as settings change.
+// KEEP THE BEHAVIORAL TEXT IN SYNC when adding/changing features.
+function renderSpecs(d){
+  const s=d.strategy||{}, g=d.goal||{}, bs=g.black_swan||{}, r=d.reflection||{}, c=d.cadence||{};
+  const isRot = s.type==="relative_strength_rotation";
+  const P=(x)=>(Math.abs(x)*100).toFixed(0)+"%";
+  const li=[];
+  li.push(`<b>Mode:</b> PAPER — no real money. Every <b>buy</b> is human-approved; the app cannot place a live order.`);
+  if(isRot){
+    const nStk=(s.stocks||[]).length, nEtf=(s.universe||[]).length-nStk;
+    li.push(`<b>Strategy:</b> ${s.name||s.type} — ${nStk ? nEtf+" ETFs + "+nStk+" individual stocks" : (s.universe||[]).length+" symbols"}, benchmark ${s.benchmark}, rebalanced ${s.rebalance}.`);
+    if(nStk) li.push(`<b>Single-stock risk rules:</b> stocks pass the same dual-momentum gate as the ETFs but are held smaller and looser: notional cap <b>${s.stock_notional_cap_pct}%</b> (vs ${s.position_notional_cap_pct}% for ETFs), catastrophe stop <b>−${s.stock_catastrophe_stop_pct}%</b> (vs −${s.catastrophe_stop_pct}%), and at most <b>${s.max_stock_positions}</b> of the ${s.hold_top_n} slots can be single names — the book can never become an all-stock portfolio.`);
+    li.push(`<b>Buys (need your approval):</b> proposed at each <b>${s.rebalance}</b> rebalance (Fridays, first run, or weekly catch-up) — and only when a new name climbs into the top <b>${s.hold_top_n}</b>. They land in the approval queue here and (if configured) as <b>Approve/Reject buttons in Discord</b> (with an alert if enabled). Approved buys fill at the <b>live price at approval time</b>, so a new position opens at ~0 unrealised. If holdings don't change, no buy is sent.`);
+    const fast = d.settings && d.settings.fast_exits;
+    li.push(`<b>Sells (automatic — no approval):</b> when a holding drops out of the top <b>${s.exit_rank_n}</b>, closes below its <b>${s.trend_sma_days}-day</b> average, hits its <b>−${s.catastrophe_stop_pct}%</b> catastrophe stop, or in a black-swan flatten. Rotation exits are checked <b>${fast ? "daily (fast exits ON)" : "weekly at the rebalance"}</b>; the stop &amp; brake are always live. Protective exits don't wait for a click.`);
+  } else {
+    li.push(`<b>Strategy:</b> ${s.type} on ${g.asset||"one asset"} — entries proposed for approval, stop/target exits automatic.`);
+  }
+  li.push(`<b>Strategy changes (reflection — need approval):</b> every <b>${r.every}</b> closed trades the agent reviews results and proposes <b>one</b> dial change — or <b>holds</b> when within spec or the sample is too small. Any proposal can be <b>backtested</b> before you approve it — in the dashboard or from Discord.`);
+  li.push(`<b>Memory (context across trades &amp; versions):</b> every buy proposal records <i>why</i> (momentum rank, score, how the last round-trip in that symbol ended) and the context stays on the filled trade. The reflection brain is shown the full strategy lineage — past changes, your approve/reject verdicts, and per-version performance — so it doesn't re-propose rejected ideas or ping-pong a dial. See the <b>Journal</b> panel.`);
+  li.push(`<b>Morning brief:</b> generated automatically each morning (first tick after 8:00) from the day's data — market trend, rankings, holdings health, what's next in line, active brakes, and what changed since yesterday. Regenerate anytime with <b>Brief now</b>.`);
+  li.push(`<b>vs S&amp;P 500 (fair comparison):</b> every fill snapshots SPY and every close snapshots it again, so each trade is compared against <i>the same dollars in SPY over its own holding window</i>. SPY only competes while a position is open — cash periods count for neither side. Live for open positions; per-trade and aggregate in the <b>vs S&amp;P 500</b> panel.`);
+  li.push(`<b>Early brake (buys paused):</b> if SPY drops ≥<b>${P(bs.early_warn_day_pct||-0.05)}</b> in a day, new buys are paused (holdings untouched) — acting <i>before</i> the −7% NYSE Level-1 halt rather than at it. Auto-clears when SPY recovers.`);
+  li.push(`<b>Black-swan brake (flatten):</b> flips to cash and halts new buys if SPY drops ≥<b>${P(bs.crash_day_pct||-0.07)}</b> in a day or drawdown ≥<b>${P(bs.max_portfolio_drawdown_pct||0.20)}</b>; auto-resumes when SPY is back above its 200-day average (or you click Resume).`);
+  li.push(`<b>Live updates:</b> prices, value, unrealized P&L, the stops, and the brake refresh about every <b>${c.risk_check_seconds||20}s</b> (free Yahoo data, can be ~15 min delayed). Decisions run on daily bars; rebalance is ${s.rebalance||"weekly"}.`);
+  li.push(`<b>Going live:</b> not enabled — deliberately gated behind two .env flags and an execution adapter that isn't built.`);
+  $("specs").innerHTML = '<ul style="margin:0; padding-left:18px; line-height:1.75">'
+    + li.map(x=>`<li>${x}</li>`).join("") + '</ul>';
+}
+
+async function refresh(){
+  let d;
+  try { d = await (await fetch("/api/state")).json(); }
+  catch(e){ $("hb").innerHTML = '<span class="dot stale"></span>offline'; return; }
+
+  const fresh = d.heartbeat && d.heartbeat.ts && (Date.now()/1000 - d.heartbeat.ts) < 180;
+  $("hb").innerHTML = `<span class="dot ${fresh?'ok':'stale'}"></span>${fresh?'live':'stale'}`;
+  $("sym").textContent = (d.goal && d.goal.asset) ? d.goal.asset : "price";
+  $("price").textContent = money(d.price);
+  $("equity").textContent = money(d.equity);
+  $("invested").textContent = money(d.invested);
+  $("cash").textContent = money(d.cash);
+  const r = d.score ? d.score.realised_return : null;
+  $("ret").innerHTML = `<span class="${cls(r)}">${pct(r)}</span>`;
+  $("score").innerHTML = d.score ? `<span class="${cls(d.score.composite)}">${d.score.composite}</span>` : "—";
+
+  // settings (don't clobber a control the user is actively touching)
+  if(d.settings){
+    const a = $("autoReflect"); if(document.activeElement!==a) a.checked = !!d.settings.auto_reflect;
+    const m = $("reflectMode"); if(document.activeElement!==m) m.value = d.settings.reflect_mode;
+    const fx = $("fastExits"); if(fx && document.activeElement!==fx) fx.checked = !!d.settings.fast_exits;
+  }
+  const rb = $("reflectBtn");
+  if(rb){ rb.disabled = !!d.reflecting; rb.textContent = d.reflecting ? "Reflecting…" : "Reflect now"; }
+
+  // reflection countdown
+  if(d.reflection){
+    const r = d.reflection, autoOn = d.settings && d.settings.auto_reflect;
+    const next = r.remaining<=0 ? "due now" : `next in ${r.remaining} trade${r.remaining===1?"":"s"}`;
+    let txt = `Reflection: every ${r.every} closed trades · ${r.since_last}/${r.every} since last · ${autoOn ? next : "auto-reflect off"}`;
+    if(r.last_note) txt += ` · last: ${r.last_note}`;
+    $("reflInfo").textContent = txt;
+
+    // toast the outcome of a manual "Reflect now" once a fresh result lands
+    const ts = r.last_ts || 0;
+    if(reflTsSeen === null){ reflTsSeen = ts; }   // baseline on first load — don't toast history
+    else if(ts > reflTsSeen){
+      reflTsSeen = ts;
+      if(reflectAwaiting){
+        reflectAwaiting = false;
+        const held = /^hold/i.test(r.last_note||"");
+        showToast(held ? "Held — no change" : "Change proposed",
+                  r.last_note || "", held ? "hold" : "proposed");
+      }
+    }
+  }
+
+  // black-swan risk-off banner
+  const ro = d.risk_off || {};
+  const banner = $("riskBanner");
+  if(banner){
+    banner.style.display = ro.active ? "" : "none";
+    if(ro.active) $("riskReason").textContent = ro.reason || "";
+  }
+  // early-brake (buys paused) banner — only when not already in full risk-off
+  const bh = d.buys_halted || {};
+  const halt = $("haltBanner");
+  if(halt){
+    const show = bh.active && !ro.active;
+    halt.style.display = show ? "" : "none";
+    if(show) $("haltReason").textContent = bh.reason || "";
+  }
+
+  const pt = d.pending_trades||[], ps = d.pending_strategy||[];
+  // new-item detection for alerts
+  const ids = new Set([...pt.map(t=>"t"+t.id), ...ps.map(s=>"s"+s.id)]);
+  if(!baselineSet){ ids.forEach(i=>knownPending.add(i)); baselineSet = true; }
+  else {
+    let fresh_n = 0; ids.forEach(i=>{ if(!knownPending.has(i)) fresh_n++; });
+    if(fresh_n>0) notify(fresh_n+" item(s) need your approval");
+    knownPending.clear(); ids.forEach(i=>knownPending.add(i));
+  }
+  const pend = pt.length + ps.length;
+  document.title = pend ? `(${pend}) hermes-trading` : "hermes-trading";
+
+  renderPendingTrades(pt);
+  renderPendingStrategy(ps, d.backtesting||[]);
+  renderBrief(d.brief, d.briefing);
+  renderJournal(d.memory);
+  renderSpyCompare(d.spy_compare);
+  renderOpen(d.open_positions||[]);
+  renderClosed(d.closed_trades||[]);
+  drawCurve(d.equity_curve||[]);
+  $("strategy").innerHTML = strategyEnglish(d.strategy, d.goal);
+  $("strategyRaw").textContent = JSON.stringify(d.strategy,null,2);
+  $("goal").innerHTML = goalEnglish(d.goal);
+  $("goalRaw").textContent = JSON.stringify(d.goal,null,2);
+  renderSpecs(d);
+}
+
+refresh();
+setInterval(refresh, 2000);
+</script>
+</body>
+</html>

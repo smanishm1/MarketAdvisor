@@ -1,0 +1,19 @@
+# What success and failure look like for the SRSR ETF rotation. The agent scores
+# trades against this and reflects on it. Numbers are tuned for ETFs (gentler than
+# the old crypto config).
+asset: "US sector ETFs"
+target_return_30d: 0.015     # success: ~1.5% / 30 days (≈18%/yr — optimistic but a bar)
+max_drawdown:      0.15      # failure: bail above 15% drawdown (rotation can draw down)
+min_sharpe:        1.0       # quality bar
+failure_below:    -0.10      # score floor — steeply negative below this realised return
+reflection_every:  8         # reflect every N closed trades (raised from 5 — slower strategy)
+one_variable_only: true      # scientific-method guardrail
+
+# Black-swan circuit breaker: a portfolio-level brake for severe market shocks.
+# (Honest limit: with daily data it reacts on the next daily close — it cushions
+# crashes and stops you buying into one, but can't dodge an intraday gap.)
+black_swan:
+  early_warn_day_pct:          -0.05   # SPY 1-day drop that PAUSES new buys (before the -7% halt)
+  crash_day_pct:               -0.07   # SPY 1-day drop that flips to risk-off (NYSE L1 = -7%)
+  max_portfolio_drawdown_pct:   0.20   # equity drawdown from peak that flips to risk-off
+  flatten_on_trigger:           true   # auto-sell everything to cash when triggered
