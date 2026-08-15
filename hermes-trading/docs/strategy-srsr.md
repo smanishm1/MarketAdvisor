@@ -16,6 +16,9 @@ framework and filling in the entry/exit/sizing rules it left unspecified.*
 > **v06** widened the ETF catastrophe stop 15→30% (a loosening — trend/rank are the real exits).
 > **v07** tightened the stock sleeve to **max 1 of the 4 slots** (was 2) — OOS-validated: vs
 > max‑2, nearly identical return for ~4pp less drawdown and a higher Sharpe (§1a).
+> **v08** is a **no-op version bump** — the `fake_hermes` stub re-proposed `catastrophe_stop_pct
+> 30→30` (already 30 since v06) and it was approved, re-dumping the file with no real change.
+> Config is functionally identical to v07.
 
 ---
 
@@ -166,7 +169,7 @@ the other updates).
 
 ## 9. App config (`strategy.yaml`)
 ```yaml
-version: "07"
+version: "08"                         # v08 = no-op reflection bump (see changelog)
 type: relative_strength_rotation
 universe: [XLK, XLF, XLV, XLE, XLI, XLY, XLP, XLU, XLB, XLRE, XLC, JEPI, JEPQ,
            NVDA, MSFT, AAPL, GOOGL, AMZN, META, AVGO]
