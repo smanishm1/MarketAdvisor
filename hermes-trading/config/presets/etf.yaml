@@ -1,0 +1,17 @@
+# Phase-3 "Sector Rotation" — the ETF core (selectable preset; mirrors the default).
+# See docs/strategy-srsr.md. Backtest: python -m hermes_trading.backtest --preset etf
+version: "03"
+type: relative_strength_rotation
+name: sector_rotation
+universe: [XLK, XLF, XLV, XLE, XLI, XLY, XLP, XLU, XLB, XLRE, XLC]
+benchmark: SPY
+momentum_lookbacks_days: [63, 126]
+trend_sma_days: 250          # OOS-validated (was 200)
+hold_top_n: 3
+exit_rank_n: 6               # OOS-validated (was 4)
+rebalance: weekly
+sizing: rank_weight          # v03: conviction-by-rank, OOS-validated (was equal_weight)
+rank_power: 1                # linear decay; 2 just hoards cash — don't
+position_notional_cap_pct: 35
+catastrophe_stop_pct: 15
+max_positions: 3

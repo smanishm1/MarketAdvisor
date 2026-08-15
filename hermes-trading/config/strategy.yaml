@@ -1,0 +1,47 @@
+version: 08
+type: relative_strength_rotation
+universe:
+- XLK
+- XLF
+- XLV
+- XLE
+- XLI
+- XLY
+- XLP
+- XLU
+- XLB
+- XLRE
+- XLC
+- JEPI
+- JEPQ
+- NVDA
+- MSFT
+- AAPL
+- GOOGL
+- AMZN
+- META
+- AVGO
+stocks:
+- NVDA
+- MSFT
+- AAPL
+- GOOGL
+- AMZN
+- META
+- AVGO
+benchmark: SPY
+momentum_lookbacks_days:
+- 63
+- 126
+trend_sma_days: 250
+hold_top_n: 4
+exit_rank_n: 6
+rebalance: weekly
+sizing: rank_weight
+rank_power: 1
+position_notional_cap_pct: 35
+catastrophe_stop_pct: 30
+stock_notional_cap_pct: 20
+stock_catastrophe_stop_pct: 25
+max_stock_positions: 1
+max_positions: 4

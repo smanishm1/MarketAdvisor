@@ -1,0 +1,18 @@
+.venv/
+__pycache__/
+*.pyc
+.env
+state/trading.db
+state/trading.db-wal
+state/trading.db-shm
+state/history/
+state/hypotheses.jsonl
+
+# runtime logs & generated artifacts
+*.log
+*.log.err
+*.egg-info/
+state/heartbeat.json
+
+# windows shortcuts
+*.lnk

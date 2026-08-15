@@ -1,0 +1,23 @@
+# Phase-4 "Liquid Leaders" rotation — selectable preset.
+# Same momentum engine as the ETF core, but a curated basket of liquid single-stock
+# leaders (AI infra, cloud, cyber, power, automation). Held more diversified than the
+# ETF version (more names, smaller each) to tame single-name risk, per the friend's
+# Phase-4 rule that single-stock risk is a fraction of the ETF unit.
+#
+# Backtest it before going live:  python -m hermes_trading.backtest --preset leaders
+# Make it the active strategy:     python -m hermes_trading.presets use leaders --reset
+version: "01"
+type: relative_strength_rotation
+name: liquid_leaders
+universe: [NVDA, AMD, AVGO, MU, QCOM, TXN, ASML, MSFT, GOOGL, AMZN, META, AAPL,
+           CRM, ORCL, ADBE, NOW, PANW, FTNT, CRWD, TSLA, ISRG, HON, ETN, NEE, NFLX, COST]
+benchmark: SPY
+momentum_lookbacks_days: [63, 126]   # 3mo + 6mo blend
+trend_sma_days: 200
+hold_top_n: 6                         # more names than ETF (3) -> smaller single-name risk
+exit_rank_n: 8
+rebalance: weekly
+sizing: equal_weight
+position_notional_cap_pct: 20         # smaller per-name cap (single-stock risk control)
+catastrophe_stop_pct: 25              # wider stop (single names are noisier); risk capped by smaller size
+max_positions: 6
