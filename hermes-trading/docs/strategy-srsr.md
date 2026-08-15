@@ -13,6 +13,9 @@ framework and filling in the entry/exit/sizing rules it left unspecified.*
 > optimization (see §1 and §10). **v05** mixed 7 liquid mega-cap **individual stocks** into
 > the universe under their own risk rules (20% cap · 25% stop · max 2 of 4 slots) — also a
 > discretionary structural change; see §1a, §10 for the honest caveats and the backtest delta.
+> **v06** widened the ETF catastrophe stop 15→30% (a loosening — trend/rank are the real exits).
+> **v07** tightened the stock sleeve to **max 1 of the 4 slots** (was 2) — OOS-validated: vs
+> max‑2, nearly identical return for ~4pp less drawdown and a higher Sharpe (§1a).
 
 ---
 
@@ -42,7 +45,7 @@ risk envelope, because single names carry earnings/idiosyncratic risk an ETF doe
 |---|---|---|
 | notional cap per position | 35% | **20%** (`stock_notional_cap_pct`) |
 | catastrophe stop | −15% | **−25%** (`stock_catastrophe_stop_pct` — wider; single names are noisier, risk is capped by the smaller size instead) |
-| slots | up to 4 | **max 2 of the 4** (`max_stock_positions`) — the book can never become an all-single-name portfolio |
+| slots | up to 4 | **max 1 of the 4** (`max_stock_positions`; v07, was 2) — the book can never become single-name-heavy |
 
 Slot budgeting is enforced in the shared signal code (`srsr.pick_targets`), so the live
 worker and the backtester can't disagree: when a stock would exceed the budget, the next
@@ -54,6 +57,12 @@ CAGR +11.2% → +16.5%, Sharpe 0.86 → 0.92, max drawdown −17.7% → **−26.
 More return, meaningfully more drawdown — and see §10 for why the CAGR gain is inflated by
 hindsight (these names were picked *because* they won the last decade).
 
+**Sleeve sizing (the v07 decision — out-of-sample, 2023→2026, the trustworthy window):**
+max 2 stocks → CAGR +10.8% / maxDD −23.8% / Sharpe 0.70 · **max 1 (chosen)** → +10.1% /
+**−19.4%** / **0.74** · no sleeve → +7.8% / −17.7% / 0.68. Max‑1 keeps almost all the return
+for much less drawdown and the best Sharpe. (None beat SPY's +19.2% OOS — this is a defensive
+book that earns its edge across full cycles, not in a bull run.)
+
 ## 2. Signal
 For each name: **momentum score = average of its 3-month and 6-month total return**
 (≈ 63 and 126 trading days). Rank all 20 highest-first. Compute SPY's score the same way.
@@ -64,7 +73,7 @@ For each name: **momentum score = average of its 3-month and 6-month total retur
 
 ## 4. Holdings & cash
 - Fill up to **4 slots** (v04; was 3) with the top-ranked names that pass both filters
-  (at most 2 of them single stocks, §1a).
+  (at most 1 of them a single stock, §1a; v07, was 2).
 - **Any slot that can't be filled stays in CASH.** Cash is the primary downside defense:
 
   | Names qualifying | Invested | Cash |
@@ -108,9 +117,9 @@ Primary (the strategy's own logic does the work):
   top-4 held, to avoid churning a name hovering at the boundary) → sell.
 
 Backstop (fast, for gaps/crashes only):
-- **Catastrophe stop: 15% below entry** (25% for single stocks, §1a), checked daily.
-  *(changed from an 8% hard stop, which fought the strategy by knocking you out of valid
-  uptrends on normal pullbacks.)*
+- **Catastrophe stop: 30% below entry** (25% for single stocks, §1a; ETF stop widened 15→30
+  in v06), checked daily. *(originally an 8% hard stop, which fought the strategy by knocking
+  you out of valid uptrends on normal pullbacks — trend + rank are the real exits.)*
 
 ## 7. Cadence
 **Rebalance weekly** (Friday close): propose new buys, flag exits. Between rebalances only the
@@ -157,7 +166,7 @@ the other updates).
 
 ## 9. App config (`strategy.yaml`)
 ```yaml
-version: "05"
+version: "07"
 type: relative_strength_rotation
 universe: [XLK, XLF, XLV, XLE, XLI, XLY, XLP, XLU, XLB, XLRE, XLC, JEPI, JEPQ,
            NVDA, MSFT, AAPL, GOOGL, AMZN, META, AVGO]
@@ -171,10 +180,10 @@ rebalance: weekly                     # Fridays at close
 sizing: rank_weight                   # conviction-by-rank (OOS-validated, was equal_weight)
 rank_power: 1                         # linear decay; weight proportional to (N - rank)
 position_notional_cap_pct: 35
-catastrophe_stop_pct: 15              # fast backstop only; trend + rank are primary exits
+catastrophe_stop_pct: 30              # v06: widened 15->30 (trend + rank are the real exits)
 stock_notional_cap_pct: 20            # v05: tighter per-stock cap
 stock_catastrophe_stop_pct: 25        # v05: wider per-stock stop
-max_stock_positions: 2                # v05: at most 2 of the 4 slots are single names
+max_stock_positions: 1                # v07: at most 1 of the 4 slots (was 2; OOS-validated)
 max_positions: 4                      # always mirrors hold_top_n (see config.load_strategy)
 ```
 Trades still hit the **approval queue**, and Hermes reflection still applies — proposing
@@ -189,7 +198,7 @@ the stock sleeve); the worker picks the file up live on its next tick.
 - Momentum **lags turns** — you buy strength (late to new leaders) and sell weakness (give a
   little back at tops). Inherent; the filters + cash limit it.
 - The 250-day filter is **slow** and checks weekly, so a fast crash draws down *some* before the
-  switch flips — the 15% stop is the faster backstop. **Not crash-proof.**
+  switch flips — the 30% stop is the faster backstop. **Not crash-proof.**
 - **Whipsaw** in choppy markets (sell to cash, rebuy) — hysteresis + weekly cadence soften it.
 - A handful of sectors aren't truly diversified in a market-wide selloff — the 250-day/cash rule
   is the answer, not position count.
@@ -200,8 +209,9 @@ the stock sleeve); the worker picks the file up live on its next tick.
 - **The v05 stock list is survivorship-biased.** NVDA/MSFT/AAPL/GOOGL/AMZN/META/AVGO were picked
   in 2026 *because* they dominated the last decade — a backtest over that same decade inevitably
   flatters them (the +5pp CAGR in §1a is an optimistic ceiling, not an expectation). The forward
-  protection is structural, not statistical: same momentum gate, tighter cap, wider stop, max 2
-  slots. Expect more drawdown than the pure-ETF book (−26% vs −18% even in the flattering test).
+  protection is structural, not statistical: same momentum gate, tighter cap, wider stop, and
+  only **max 1 slot** (v07). At max 1 the sleeve adds little drawdown vs the pure-ETF book
+  (≈−19% vs −18% OOS — the tightened budget nearly closes the gap that max 2 opened at −24%).
 - **Single names add event risk.** An earnings gap can blow through the −25% stop overnight;
   the stop limits the damage, it does not prevent it. Position size (≤20%) is the real bound:
   worst case ≈ a −25%+ gap on a 20% position ≈ −5%+ of equity per name.

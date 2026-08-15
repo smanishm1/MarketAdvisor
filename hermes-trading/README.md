@@ -114,7 +114,7 @@ reflection step shells out to `hermes`; override the binary with `HERMES_CMD` if
 
 The active strategy is **SRSR** (relative-strength rotation over 20 symbols — 11 SPDR
 sectors, `JEPI`/`JEPQ`, plus 7 mega-cap single stocks under tighter risk rules: 20% cap,
-25% stop, max 2 of the 4 slots — see `docs/strategy-srsr.md`). Judge it (and any dial
+25% stop, max 1 of the 4 slots — see `docs/strategy-srsr.md`). Judge it (and any dial
 change) on years of history, not 5 live trades:
 
 ```bash
