@@ -21,7 +21,7 @@ from typing import Any
 
 from rich.console import Console
 
-from . import approval, db, memory
+from . import approval, db, memory, review
 from .config import dump_strategy, load_goal, load_strategy
 from .paths import HYPOTHESES_FILE, load_env
 from .score import score
@@ -105,6 +105,9 @@ def build_change(strat: dict[str, Any], variable: str, new_value: Any) -> dict[s
     new_strat = copy.deepcopy(strat)
     # coerce to the type of the existing value
     coerced = type(old_value)(new_value) if old_value is not None else new_value
+    if coerced == old_value:
+        # e.g. a stub brain re-proposing the value already live (30 -> 30) — never queue it
+        raise review.NoOpChange(f"{variable} is already {old_value} — nothing would change")
     _set(new_strat, variable, coerced)
     to_version = _bump_version(new_strat)
     new_strat["version"] = to_version
@@ -115,6 +118,7 @@ def build_change(strat: dict[str, Any], variable: str, new_value: Any) -> dict[s
         "old_value": old_value,
         "new_value": coerced,
         "proposed_yaml": dump_strategy(new_strat),
+        "changes_json": json.dumps({variable: [old_value, coerced]}),
     }
 
 
@@ -186,6 +190,7 @@ def _memory_block(mem: dict[str, Any] | None) -> str:
             "versions": f"v{c['from_version']} -> v{c['to_version']}",
             "outcome": c["status"],  # applied | rejected (by the human)
             "rationale": (c.get("rationale") or "")[:140],
+            "human_reason": (c.get("decision_reason") or "")[:200],  # WHY the human decided
         }
         for c in mem.get("strategy_lineage", [])
     ]
@@ -205,7 +210,8 @@ def _memory_block(mem: dict[str, Any] | None) -> str:
         f"Recent reflection decisions (including holds):\n"
         f"{json.dumps(reflections, indent=2)}\n\n"
         "Use this history: do NOT re-propose a change the human rejected or one that "
-        "made a version perform worse, and do not ping-pong a variable back and forth.\n\n"
+        "made a version perform worse, and do not ping-pong a variable back and forth. "
+        "Respect the human's stated reasons (human_reason) for each verdict.\n\n"
     )
 
 
@@ -342,7 +348,10 @@ def propose_once(mode: str, *, announce: bool = False) -> dict | None:
         if variable in (None, "none"):
             return _record_hold(conn, source, scored, rationale, announce)
 
-        change = build_change(strat, variable, new_value)
+        try:
+            change = build_change(strat, variable, new_value)
+        except review.NoOpChange as exc:
+            return _record_hold(conn, source, scored, f"proposal was a no-op ({exc}); holding.", announce)
         change["source"] = source
         change["rationale"] = rationale
         prop_id = approval.propose_strategy(conn, change)

@@ -7,6 +7,7 @@ state/trading.db-wal
 state/trading.db-shm
 state/history/
 state/hypotheses.jsonl
+state/decisions.jsonl
 
 # runtime logs & generated artifacts
 *.log

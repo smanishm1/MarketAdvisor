@@ -26,9 +26,17 @@ real money.
   runs (no API cost): market trend, rankings, holdings health, what's next in line, active
   brakes, and what changed since yesterday. Regenerate anytime with the dashboard's
   **Brief now** button.
+- **Options stream** (`hermes_trading.wheel`, `wheel_book`, `wheel_screen`) — a second,
+  separate $10K paper book that runs **the wheel** on companies with healthy free cash flow.
+  It sells cash-secured puts; if assigned, it sells covered calls at or above cost until the
+  shares are called away. It holds at most 2 positions, one per sector, and keeps ≥ 10% in
+  cash. Every sale needs your approval (dashboard or Discord). Buy-backs at 50% profit,
+  expiries and assignments are automatic. A weekly S&P 500 screen explains why each
+  company qualifies. Spec: [docs/strategy-wheel.md](docs/strategy-wheel.md); config:
+  `config/options.yaml`.
 
-State lives in `state/trading.db` (SQLite, WAL). Config is `config/goal.yaml` and
-`config/strategy.yaml`.
+State lives in `state/trading.db` (SQLite, WAL). Config is `config/goal.yaml`,
+`config/strategy.yaml` and `config/options.yaml`.
 
 ## Setup (Windows, Python 3.10+)
 
@@ -114,16 +122,28 @@ reflection step shells out to `hermes`; override the binary with `HERMES_CMD` if
 
 The active strategy is **SRSR** (relative-strength rotation over 20 symbols — 11 SPDR
 sectors, `JEPI`/`JEPQ`, plus 7 mega-cap single stocks under tighter risk rules: 20% cap,
-25% stop, max 1 of the 4 slots — see `docs/strategy-srsr.md`). Judge it (and any dial
-change) on years of history, not 5 live trades:
+25% stop, max 1 of the 6 slots, and skipped within 5 days of their earnings — see
+`docs/strategy-srsr.md`). Approval cards and the morning brief also show recent **headlines**
+and a stock's **next earnings date** (context only — no effect on the signal). Judge it (and any
+dial change) on years of history, not 5 live trades:
 
 ```bash
-.venv/Scripts/python -m hermes_trading.backtest --years 15
+.venv/Scripts/python -m hermes_trading.backtest            # 20 years, net (default)
+.venv/Scripts/python -m hermes_trading.backtest --gross    # the old frictionless numbers
 ```
 
-Prints total return / CAGR / max drawdown / Sharpe / % cash / # trades vs SPY buy & hold.
+Prints CAGR / max drawdown / Sharpe / % cash / trades / costs paid / interest earned / turnover vs
+SPY buy & hold, plus a **per-regime table** (2008 crash, 2009 rebound, 2020, 2022 bear, 2023-26
+bull…). Results are **net**: every buy and sell pays a per-side cost (5 bps), idle cash earns the
+13-week T-bill, and Sharpe is measured in excess of the T-bill rate — the live paper book uses the
+same assumptions (`goal.yaml → execution:`).
 *Honest warning: tuning dials until the backtest looks great is curve-fitting — prefer robust
-round numbers and out-of-sample checks.*
+round numbers, out-of-sample checks, and consistency across regimes.*
+
+**Change governance:** every strategy proposal (from the reflection loop or a human analysis) is
+**backtested automatically before it can be approved**, approving or rejecting needs a **one-line
+reason** (dashboard or Discord pop-up; logged to `state/decisions.jsonl`), and the dashboard's
+**Drift** panel compares live settings against the original design in `config/baseline.yaml`.
 
 **Strategies & presets:**
 ```bash

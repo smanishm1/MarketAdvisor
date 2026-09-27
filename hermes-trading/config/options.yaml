@@ -1,0 +1,40 @@
+# Options stream — "the wheel" on companies with healthy free cash flow.
+# Paper only. Every NEW option sale needs your approval; closing trades (take-profit),
+# expirations and assignments are handled automatically. See docs/strategy-wheel.md.
+version: "01"
+start_equity: 10000
+
+# ---- the wheel ---------------------------------------------------------------
+# 1. sell a cash-secured PUT on a screened company (collateral = strike x 100, held in cash)
+# 2. expires above the strike -> keep the premium, repeat
+#    finishes below the strike -> ASSIGNED: buy 100 shares at the strike
+# 3. with shares: sell a covered CALL at/above your cost -> keep premium; if called away, repeat
+max_positions: 2                   # wheel slots (a short put or a stock holding each uses one)
+max_collateral_per_position: 6500  # $ cap per slot (strike x 100)
+min_cash_buffer_pct: 10            # always keep >= 10% of equity unreserved
+target_delta: 0.25                 # sell options near 25-delta (~75% model chance to expire worthless)
+delta_range: [0.15, 0.35]
+dte_range: [14, 50]                # days to expiration
+avoid_earnings: true               # expiration must fall BEFORE the next earnings report
+min_open_interest: 50              # liquidity
+max_spread_pct: 30                 # bid-ask spread as % of mid (live quotes only)
+take_profit_pct: 50                # buy back automatically once 50% of the premium is captured
+never_sell_calls_below_basis: true # covered calls only at/above your cost per share
+
+# ---- execution realism (paper fills) -------------------------------------------
+fill_spread_fraction: 0.25         # sells fill at bid + 25% of the spread; buys at ask - 25%
+commission_per_contract: 0.65
+cash_rate: tbill                   # idle cash (incl. put collateral) earns the 13-week T-bill
+
+# ---- the free-cash-flow screen (S&P 500, refreshed weekly) ----------------------
+screen:
+  price_range: [10, 65]            # a put's collateral (strike x 100) must fit one slot
+  exclude_sectors: [Financials, Real Estate]   # FCF isn't meaningful for banks/insurers/REITs
+  min_fcf_margin: 0.10             # FCF >= 10% of revenue (last 12 months, from statements)
+  max_fcf_margin: 0.60             # sanity bound — higher is almost always a data error
+  min_fcf_yield: 0.04              # FCF >= 4% of market value
+  max_net_debt_to_fcf: 3.0         # debt serviceable from free cash flow
+  min_positive_fcf_years: 3        # positive FCF every year on record (3-4 annual reports)
+  min_price_vs_sma200: 0.95        # not in a downtrend...
+  min_return_6m: -0.20             # ...and not down 20%+ in six months (no falling knives)
+  refresh_days: 7

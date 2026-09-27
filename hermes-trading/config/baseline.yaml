@@ -1,0 +1,20 @@
+# The ORIGINAL SRSR design (v01) — the fixed yardstick for drift reports.
+# Do NOT edit this to match the live strategy: its whole purpose is to answer
+# "how far — and in which direction — have we moved from the original intent?"
+# (see hermes_trading.drift and docs/strategy-srsr.md). Values per the design doc's
+# changelog: v02 changed trend 200->250 and exit rank 4->6; v03 equal->rank weights.
+version: "01"
+type: relative_strength_rotation
+name: srsr_original_v01
+universe: [XLK, XLF, XLV, XLE, XLI, XLY, XLP, XLU, XLB, XLRE, XLC]
+benchmark: SPY
+momentum_lookbacks_days: [63, 126]   # 3-month + 6-month blend
+trend_sma_days: 200                  # absolute-trend filter
+hold_top_n: 3                        # slots
+exit_rank_n: 4                       # dropout rank: sell when out of the top 4
+rebalance: weekly
+sizing: equal_weight
+rank_power: 1
+position_notional_cap_pct: 35        # per-position cap
+catastrophe_stop_pct: 15             # stop loss below entry
+max_positions: 3

@@ -15,7 +15,8 @@ import time
 
 from rich.console import Console
 
-from . import approval, brief, db, memory, paper_broker, settings, srsr
+from . import approval, brief, db, drift, memory, news, paper_broker, review, settings, srsr, wheel
+from . import execution as ex
 from .adapters import equities
 from .adapters import price as price_adapter
 from .config import load_goal, load_strategy, save_strategy
@@ -60,10 +61,24 @@ async def fetch_price_with_retry(symbol: str, period: int) -> dict:
 
 
 def reconcile_strategy(conn: sqlite3.Connection) -> None:
-    """Apply any human-approved strategy change: archive prior, write new."""
+    """Apply any human-approved strategy change: archive prior, write new.
+
+    Guard: an approval only applies to the exact config it was backtested against.
+    If the live strategy moved since (another change was applied first), the
+    proposal is re-based and sent back for a fresh backtest + approval instead.
+    """
     for prop in approval.list_approved_strategy(conn):
         ensure_dirs()
         current = load_strategy()
+        if review.is_stale(prop, current):
+            kept = review.rebase(conn, prop, current)
+            conn.commit()
+            console.log(
+                f"[yellow]approved change #{prop['id']} no longer matches the live strategy[/] — "
+                + ("re-based; it needs a fresh backtest and approval" if kept
+                   else "closed (the change is already in effect)")
+            )
+            continue
         from_v = str(current.get("version", "01")).zfill(2)
         archive = HISTORY_DIR / f"v{from_v.zfill(4)}.yaml"
         archive.write_text(STRATEGY_FILE.read_text(encoding="utf-8"), encoding="utf-8")
@@ -71,7 +86,8 @@ def reconcile_strategy(conn: sqlite3.Connection) -> None:
         approval.set_strategy_status(conn, prop["id"], "applied")
         console.log(
             f"[cyan]strategy applied[/]: v{from_v} -> v{prop['to_version']} "
-            f"({prop['variable']}: {prop['old_value']} -> {prop['new_value']})"
+            f"({prop['variable']}: {prop['old_value']} -> {prop['new_value']}) — "
+            f"reason: {prop.get('decision_reason') or '—'}"
         )
 
 
@@ -193,6 +209,39 @@ async def _run_reflection_bg(mode: str) -> None:
         console.log(f"[red]auto-reflection failed[/]: {exc}")
     finally:
         _reflection_inflight = False
+
+
+_review_task: asyncio.Task | None = None
+_drift_task: asyncio.Task | None = None
+
+
+async def _in_thread(label: str, fn) -> None:
+    try:
+        out = await asyncio.to_thread(fn)
+        if label == "review" and out:
+            console.log(f"[cyan]backtested {out} pending strategy proposal(s)[/] — ready for review")
+        elif label == "drift":
+            console.log("[dim]drift report refreshed (original v01 vs live, backtested)[/]")
+    except Exception as exc:  # noqa: BLE001 — background jobs must never kill the worker
+        console.log(f"[yellow]{label} job failed[/]: {exc}")
+
+
+async def maybe_review_and_drift(conn: sqlite3.Connection) -> None:
+    """Background jobs, never blocking the tick:
+    - backtest any pending strategy proposal that lacks a result (or went stale),
+      so every change shows its backtest before a human can approve it;
+    - refresh the original-vs-live drift backtest weekly / when the version changes."""
+    global _review_task, _drift_task
+    if _review_task is None or _review_task.done():
+        current = load_strategy()
+        if any(
+            review.is_stale(r, current) or review.bt_status(r) == "missing"
+            or review._stuck(review.backtest_of(r))
+            for r in approval.list_pending_strategy(conn)
+        ):
+            _review_task = asyncio.create_task(_in_thread("review", review.process_pending))
+    if (_drift_task is None or _drift_task.done()) and drift.refresh_due(conn):
+        _drift_task = asyncio.create_task(_in_thread("drift", drift.refresh))
 
 
 async def maybe_auto_reflect(conn: sqlite3.Connection) -> None:
@@ -425,6 +474,11 @@ async def rotation_tick(conn: sqlite3.Connection, cfg: dict) -> None:
     # protective exits (auto) — react at the intraday cadence
     for msg in paper_broker.check_catastrophe_stops(conn, last, spy=spy_px):
         console.log(f"[magenta]{msg}[/]")
+    # idle cash earns T-bill interest — credited once per calendar day
+    _, cash_now, _ = paper_broker.equity_now_multi(conn, last)
+    earned = ex.accrue_cash_interest(conn, cash_now)
+    if earned:
+        console.log(f"[dim]cash interest credited: +${earned:,.2f}[/]")
     # equity is recomputed live in the dashboard from the heartbeat; only persist a
     # curve point every SNAPSHOT_SECONDS so the table doesn't bloat at the 20s tick.
     global _last_snapshot_ts
@@ -487,10 +541,22 @@ async def rotation_tick(conn: sqlite3.Connection, cfg: dict) -> None:
             )
             ranked = sorted(decision.scores, key=lambda s: decision.scores[s], reverse=True)
             rank_of = {s: i + 1 for i, s in enumerate(ranked)}
+            # best-effort news + earnings blackout for the buy candidates (soft-fail,
+            # off the event loop). News is context-only; the blackout skips a stock buy
+            # whose earnings fall within `earnings_blackout_days` (0 = guard off).
+            blackout_days = int(cfg.get("earnings_blackout_days", 0))
+            buy_meta = await asyncio.to_thread(news.prep, list(buys), cfg, blackout_days)
             for sym in buys:
                 if slots_left <= 0:
                     break
                 if sym in held_after or sym in pending or approval.has_pending_or_open(conn, sym):
+                    continue
+                meta = buy_meta.get(sym) or {}
+                if meta.get("block"):
+                    console.log(
+                        f"[yellow]SKIP BUY {sym}[/] — earnings {meta.get('edate')} "
+                        f"within {blackout_days}d blackout (slot stays cash)"
+                    )
                     continue
                 price = last[sym]
                 size = paper_broker.weighted_size(
@@ -516,6 +582,8 @@ async def rotation_tick(conn: sqlite3.Connection, cfg: dict) -> None:
                     ),
                     "is_stock": srsr.is_stock(cfg, sym),
                     "last_exit": memory.trade_context(conn, sym),
+                    "news": meta.get("news") or [],
+                    "earnings": meta["edate"].isoformat() if meta.get("edate") else None,
                 })
                 pid = approval.propose_trade(
                     conn,
@@ -536,6 +604,11 @@ async def rotation_tick(conn: sqlite3.Connection, cfg: dict) -> None:
         conn.commit()
 
     await maybe_auto_reflect(conn)
+    await maybe_review_and_drift(conn)
+    try:
+        await wheel.tick(conn)          # the options stream — a separate $10K book (the wheel)
+    except Exception as exc:  # noqa: BLE001 — the options stream must never break the ETF tick
+        console.log(f"[yellow]options stream tick failed[/]: {exc}")
     equity, _, _ = paper_broker.equity_now_multi(conn, last)
     write_heartbeat(
         {

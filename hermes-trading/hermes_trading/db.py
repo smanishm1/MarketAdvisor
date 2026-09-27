@@ -74,6 +74,52 @@ CREATE TABLE IF NOT EXISTS meta (
     value TEXT
 );
 
+-- ---- options stream (the wheel) — a separate $10K book ------------------------
+CREATE TABLE IF NOT EXISTS opt_positions (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    kind        TEXT NOT NULL,            -- short_put | short_call | stock
+    symbol      TEXT NOT NULL,            -- the underlying
+    contract    TEXT,                     -- OCC option symbol (options only)
+    strike      REAL,
+    expiry      TEXT,                     -- YYYY-MM-DD (options only)
+    qty         REAL NOT NULL,            -- contracts (options) or shares (stock)
+    open_price  REAL NOT NULL,            -- premium/share received (short) or cost/share (stock)
+    open_ts     REAL NOT NULL,
+    status      TEXT NOT NULL DEFAULT 'open',   -- open | closed
+    close_price REAL,
+    close_ts    REAL,
+    close_reason TEXT,                    -- expired | take_profit | assigned | called_away
+    pnl         REAL,
+    context     TEXT                      -- JSON: why it was opened (FCF metrics, delta, ...)
+);
+CREATE TABLE IF NOT EXISTS opt_pending (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    action      TEXT NOT NULL,            -- sell_put | sell_call
+    symbol      TEXT NOT NULL,
+    contract    TEXT NOT NULL,
+    strike      REAL NOT NULL,
+    expiry      TEXT NOT NULL,
+    qty         REAL NOT NULL,
+    price       REAL NOT NULL,            -- proposed premium per share (live quote)
+    position_id INTEGER,                  -- sell_call: the stock position it covers
+    proposed_ts REAL NOT NULL,
+    status      TEXT NOT NULL DEFAULT 'pending',  -- pending|approved|rejected|filled|expired
+    resolved_ts REAL,
+    context     TEXT
+);
+CREATE TABLE IF NOT EXISTS opt_equity (
+    ts          REAL PRIMARY KEY,
+    equity      REAL NOT NULL,
+    cash        REAL NOT NULL,
+    reserved    REAL NOT NULL,            -- cash-secured put collateral
+    positions_value REAL NOT NULL         -- stock value minus the cost to buy back short options
+);
+CREATE TABLE IF NOT EXISTS opt_screen (
+    date  TEXT PRIMARY KEY,
+    ts    REAL NOT NULL,
+    json  TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS briefs (
     date  TEXT PRIMARY KEY,   -- ISO date the brief is FOR (one per day, regenerable)
     ts    REAL NOT NULL,      -- when it was generated
@@ -99,6 +145,12 @@ def init_db() -> None:
         cols = [r["name"] for r in conn.execute("PRAGMA table_info(pending_strategy)").fetchall()]
         if "backtest_json" not in cols:
             conn.execute("ALTER TABLE pending_strategy ADD COLUMN backtest_json TEXT")
+        # governance (hermes_trading.review): the structured diff a proposal makes
+        # ({key: [old, new]}, lets it be re-based if the strategy moves), and the
+        # human's one-line reason + where the decision was made.
+        for col in ("changes_json", "decision_reason", "decided_via"):
+            if col not in cols:
+                conn.execute(f"ALTER TABLE pending_strategy ADD COLUMN {col} TEXT")
         for table in ("pending_trades", "trades"):
             cols = [r["name"] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()]
             if "context" not in cols:

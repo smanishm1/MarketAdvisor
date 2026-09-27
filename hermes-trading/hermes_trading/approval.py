@@ -79,7 +79,7 @@ def propose_strategy(conn: sqlite3.Connection, prop: dict[str, Any]) -> int:
     cur = conn.execute(
         "INSERT INTO pending_strategy(proposed_ts, source, from_version, "
         "to_version, variable, old_value, new_value, rationale, proposed_yaml, "
-        "status) VALUES(?,?,?,?,?,?,?,?,?, 'pending')",
+        "changes_json, status) VALUES(?,?,?,?,?,?,?,?,?,?, 'pending')",
         (
             db.now(),
             prop["source"],
@@ -90,6 +90,7 @@ def propose_strategy(conn: sqlite3.Connection, prop: dict[str, Any]) -> int:
             str(prop.get("new_value")),
             prop.get("rationale", ""),
             prop["proposed_yaml"],
+            prop.get("changes_json"),
         ),
     )
     return int(cur.lastrowid)

@@ -1,4 +1,4 @@
-version: 08
+version: '12'
 type: relative_strength_rotation
 universe:
 - XLK
@@ -34,14 +34,15 @@ momentum_lookbacks_days:
 - 63
 - 126
 trend_sma_days: 250
-hold_top_n: 4
-exit_rank_n: 6
+hold_top_n: 6
+exit_rank_n: 9
 rebalance: weekly
 sizing: rank_weight
 rank_power: 1
 position_notional_cap_pct: 35
-catastrophe_stop_pct: 30
+catastrophe_stop_pct: 15
 stock_notional_cap_pct: 20
 stock_catastrophe_stop_pct: 25
 max_stock_positions: 1
-max_positions: 4
+earnings_blackout_days: 5
+max_positions: 6

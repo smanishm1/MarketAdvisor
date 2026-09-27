@@ -41,6 +41,13 @@ def load_strategy_file(path) -> dict[str, Any]:
         strat.setdefault("universe", [])
         strat.setdefault("benchmark", "SPY")
         strat.setdefault("momentum_lookbacks_days", [63, 126])
+        # optional per-horizon weights (negative = reversal); absent = equal weights
+        mw = strat.get("momentum_weights")
+        if mw is not None and len(mw) != len(strat["momentum_lookbacks_days"]):
+            raise ValueError(
+                f"momentum_weights {mw} must have one weight per lookback "
+                f"{strat['momentum_lookbacks_days']}"
+            )
         strat.setdefault("trend_sma_days", 200)
         strat.setdefault("hold_top_n", 3)
         strat.setdefault("exit_rank_n", 4)

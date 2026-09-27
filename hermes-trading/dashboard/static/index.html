@@ -148,6 +148,16 @@
     <div id="pendingStrategy"></div>
   </section>
 
+  <section class="panel col-span" style="border-color:#1f6feb">
+    <h2>Options stream · the wheel on healthy free cash flow · separate $10K book <span class="badge" id="optBadge"></span></h2>
+    <div id="options"></div>
+  </section>
+
+  <section class="panel col-span">
+    <h2>Drift vs original design <span class="badge" id="driftBadge"></span></h2>
+    <div id="drift"></div>
+  </section>
+
   <section class="panel">
     <h2>Equity curve</h2>
     <canvas id="curve" width="560" height="160"></canvas>
@@ -273,18 +283,30 @@ function notify(body){
   }
 }
 
+function esc(s){ return String(s==null?"":s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;"); }
 function tradeContextHtml(ctx){
   if(!ctx) return "";
+  if(typeof ctx === "string"){ try { ctx = JSON.parse(ctx); } catch(e){ return ""; } }
   const parts = [];
   if(ctx.rank) parts.push(`momentum rank <b>#${ctx.rank}</b> of ${ctx.of||"—"}`);
   if(ctx.score!=null) parts.push(`score ${(ctx.score*100).toFixed(1)}%`
     + (ctx.bench_score!=null ? ` vs SPY ${(ctx.bench_score*100).toFixed(1)}%` : ""));
   if(ctx.is_stock) parts.push('<span class="badge">single stock — tighter cap, wider stop</span>');
+  if(ctx.earnings) parts.push(`next earnings <b>${esc(ctx.earnings)}</b>`);
   parts.push(ctx.last_exit
     ? `last round-trip: <b class="${cls(ctx.last_exit.pnl_pct)}">${pct(ctx.last_exit.pnl_pct)}</b>`
       + ` (${ctx.last_exit.exit_reason||"—"}, ${fmtTs(ctx.last_exit.exit_ts)})`
     : "first time holding this name");
-  return `<div class="muted" style="margin-top:6px">${parts.join(" · ")}</div>`;
+  let html = `<div class="muted" style="margin-top:6px">${parts.join(" · ")}</div>`;
+  const nws = ctx.news || [];
+  if(nws.length){
+    html += '<div class="muted" style="margin-top:4px; line-height:1.5">'
+      + nws.slice(0,3).map(h => "📰 " + (h.url
+          ? `<a href="${esc(h.url)}" target="_blank" rel="noopener" style="color:var(--blue)">${esc(h.title)}</a>`
+          : esc(h.title))).join("<br>")
+      + '</div>';
+  }
+  return html;
 }
 function renderPendingTrades(items){
   $("ptCount").textContent = items.length ? items.length+" awaiting" : "";
@@ -387,7 +409,8 @@ function renderJournal(m){
     ? lin.map(c=>`<div class="brief-line">${fmtTs(c.proposed_ts)} · v${c.from_version}→v${c.to_version}
         <code>${c.variable}</code> ${c.old_value} → <b>${c.new_value}</b>
         — <span class="${c.status==='applied'?'pos':'neg'}">${c.status}</span>
-        <span class="muted">${c.rationale||""}</span></div>`).join("")
+        <span class="muted">${esc(c.rationale||"")}</span>
+        ${c.decision_reason ? `<div class="muted" style="margin-left:14px">↳ human reason${c.decided_via?" ("+esc(c.decided_via)+")":""}: <i>${esc(c.decision_reason)}</i></div>` : ""}</div>`).join("")
     : '<div class="muted">no strategy changes yet</div>';
   html += '<div class="brief-title" style="margin-top:12px">Recent reflection decisions</div>';
   html += refl.length
@@ -400,49 +423,182 @@ function renderJournal(m){
 
 async function backtestStrategy(id){
   try { await fetch(`/api/strategy/${id}/backtest`,{method:"POST"}); } catch(e){}
-  setTimeout(refresh, 400);
+  lastStratSig = null; setTimeout(refresh, 400);
 }
+const P1 = (x)=>(x==null?"—":(x*100).toFixed(1)+"%");
+const S2 = (x)=>(x==null?"—":Number(x).toFixed(2));
 function btHtml(s, running){
-  if(running) return '<div class="muted" style="margin-top:8px">Backtesting 10y… (~30s)</div>';
-  let bt=null; try { bt = s.backtest_json ? JSON.parse(s.backtest_json) : null; } catch(e){}
-  if(!bt) return `<div style="margin-top:8px"><button onclick="backtestStrategy(${s.id})">Backtest this change (10y)</button></div>`;
-  if(bt.error) return `<div class="neg" style="margin-top:8px">backtest: ${bt.error}</div>`;
-  const c=bt.current, p=bt.proposed, P=(x)=>(x*100).toFixed(1)+"%";
-  let html = `<div style="margin-top:8px" class="muted">
-    Full ${bt.start}→${bt.end} (current → proposed):
-    CAGR ${P(c.cagr)}→<b class="${cls(p.cagr-c.cagr)}">${P(p.cagr)}</b> ·
-    maxDD ${P(c.max_drawdown)}→<b class="${cls(p.max_drawdown-c.max_drawdown)}">${P(p.max_drawdown)}</b> ·
-    Sharpe ${c.sharpe.toFixed(2)}→<b class="${cls(p.sharpe-c.sharpe)}">${p.sharpe.toFixed(2)}</b>
-  </div>`;
-  if(bt.current_oos && bt.proposed_oos){
-    const co=bt.current_oos, po=bt.proposed_oos, better = po.sharpe>co.sharpe;
-    html += `<div style="margin-top:4px" class="${better?'pos':'neg'}">
-      <b>Out-of-sample</b> (held out from ${bt.oos_start} — the trustworthy test):
-      CAGR ${P(co.cagr)}→<b>${P(po.cagr)}</b> · maxDD ${P(co.max_drawdown)}→<b>${P(po.max_drawdown)}</b> ·
-      Sharpe ${co.sharpe.toFixed(2)}→<b>${po.sharpe.toFixed(2)}</b> —
-      ${better ? "holds up out-of-sample ✓" : "does NOT improve OOS ✗ (likely overfit — reject)"}
-    </div>`;
+  const bt = s.backtest, st = s.bt_status;
+  if(s.stale) return '<div class="muted" style="margin-top:8px">↻ The live strategy changed since this was proposed — re-basing it onto the current settings and re-backtesting…</div>';
+  if(running || st==="running" || st==="missing")
+    return '<div class="muted" style="margin-top:8px">⏳ Backtesting (20y, net of costs, incl. crash &amp; rebound regimes)… Approve unlocks when the result is in.</div>';
+  if(st==="error")
+    return `<div class="neg" style="margin-top:8px">backtest failed: ${esc(bt.error)} <button onclick="backtestStrategy(${s.id})">Re-run</button></div>`;
+  const c=bt.current, p=bt.proposed, co=bt.current_oos, po=bt.proposed_oos, b=bt.baseline, bo=bt.baseline_oos, a=bt.assumptions||{};
+  const better = po.sharpe > co.sharpe;
+  const row = (label, x, y, z) => `<tr><td>${label}</td><td>${x}</td><td>${y}</td><td><b>${z}</b></td></tr>`;
+  let html = `<div class="muted" style="margin-top:8px;font-size:12px">Net of ${a.cost_bps_per_side??"?"} bps/side trading costs · cash earns ${esc(a.cash_rate)} · Sharpe in excess of ${esc(a.risk_free)}</div>
+    <table style="margin-top:4px"><thead><tr><th>${bt.start}→${bt.end}</th><th>original v01</th><th>current</th><th>proposed</th></tr></thead><tbody>
+    ${row("CAGR (full)", P1(b&&b.cagr), P1(c.cagr), `<span class="${cls(p.cagr-c.cagr)}">${P1(p.cagr)}</span>`)}
+    ${row("Max drawdown (full)", P1(b&&b.max_drawdown), P1(c.max_drawdown), `<span class="${cls(p.max_drawdown-c.max_drawdown)}">${P1(p.max_drawdown)}</span>`)}
+    ${row("Sharpe (full)", S2(b&&b.sharpe), S2(c.sharpe), `<span class="${cls(p.sharpe-c.sharpe)}">${S2(p.sharpe)}</span>`)}
+    ${row(`Sharpe, out-of-sample from ${bt.oos_start}`, S2(bo&&bo.sharpe), S2(co.sharpe), `<span class="${better?'pos':'neg'}">${S2(po.sharpe)}</span>`)}
+    ${row("Turnover / yr", (b?b.turnover_annual.toFixed(1)+"x":"—"), c.turnover_annual.toFixed(1)+"x", p.turnover_annual.toFixed(1)+"x")}
+    </tbody></table>`;
+  const rc = (bt.regimes||{}).current||[], rp = (bt.regimes||{}).proposed||[];
+  if(rc.length){
+    const byName = Object.fromEntries(rp.map(r=>[r.regime,r]));
+    html += `<table style="margin-top:6px"><thead><tr><th>regime</th><th>current</th><th>proposed</th><th>SPY</th></tr></thead><tbody>`
+      + rc.map(r=>{ const q = byName[r.regime]||{}; return `<tr><td>${r.regime}</td><td>${P1(r.return)}</td>
+          <td class="${cls((q.return||0)-r.return)}">${P1(q.return)}</td><td class="muted">${P1(r.spy_return)}</td></tr>`; }).join("")
+      + `</tbody></table>`;
   }
+  html += `<div class="${better?'pos':'neg'}" style="margin-top:4px">${better ? "✓ improves out-of-sample Sharpe" : "✗ does NOT improve out-of-sample Sharpe (be skeptical)"}
+    <button style="margin-left:8px" onclick="backtestStrategy(${s.id})">Re-run</button></div>`;
   return html;
+}
+
+// reason drafts survive the 2s refresh; the panel only re-renders when its data changes
+const reasonDrafts = {};
+let lastStratSig = null;
+async function decideStrategy(id, action){
+  const reason = (reasonDrafts[id]||"").trim();
+  if(reason.length < 8){ showToast("Reason required", "Write one line of reasoning (at least 8 characters) before you "+action+".", "hold"); return; }
+  let r;
+  try { r = await fetch(`/api/strategy/${id}/${action}`, {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({reason})}); }
+  catch(e){ showToast("Network error", String(e), "hold"); return; }
+  if(!r.ok){ let msg="failed"; try { msg=(await r.json()).detail||msg; } catch(e){} showToast(`Couldn't ${action}`, esc(msg), "hold"); return; }
+  delete reasonDrafts[id]; lastStratSig = null;
+  showToast(action==="approve" ? "Approved" : "Rejected", esc(reason), action==="approve" ? "proposed" : "hold");
+  refresh();
 }
 function renderPendingStrategy(items, backtesting){
   $("psCount").textContent = items.length ? items.length+" awaiting" : "";
   const box = $("pendingStrategy");
+  const sig = JSON.stringify(items.map(s=>[s.id, s.bt_status, s.can_approve, s.stale, s.approve_block,
+    s.backtest && s.backtest.ts, (backtesting||[]).indexOf(s.id)>=0]));
+  if(sig === lastStratSig) return;
+  if(box.contains(document.activeElement) && document.activeElement.tagName==="INPUT") return;  // don't clobber typing
+  lastStratSig = sig;
   if(!items.length){ box.innerHTML = '<div class="queue-item empty">No strategy changes awaiting approval.</div>'; return; }
   box.innerHTML = items.map(s => `
     <div class="queue-item">
       <div class="queue-head">
-        <div><span class="pill" style="background:#21262d">${s.source}</span>
-          <code>${s.variable}</code> ${s.old_value} → <b>${s.new_value}</b>
+        <div><span class="pill" style="background:#21262d">${esc(s.source)}</span>
+          <code>${esc(s.variable)}</code> ${esc(s.old_value)} → <b>${esc(s.new_value)}</b>
           <span class="muted">· v${s.from_version} → v${s.to_version}</span></div>
-        <div class="queue-actions">
-          <button class="approve" onclick="post('/api/strategy/${s.id}/approve')">Approve</button>
-          <button class="reject"  onclick="post('/api/strategy/${s.id}/reject')">Reject</button>
-        </div>
       </div>
-      <div class="muted" style="margin-top:6px">${s.rationale||""}</div>
+      <div class="muted" style="margin-top:6px">${esc(s.rationale||"")}</div>
       ${btHtml(s, (backtesting||[]).indexOf(s.id) >= 0)}
+      <div style="margin-top:8px; display:flex; gap:8px; align-items:center; flex-wrap:wrap">
+        <input id="reason-${s.id}" placeholder="One line of reasoning (required to approve or reject)" maxlength="280"
+          style="flex:1; min-width:260px; font:inherit; font-size:12px; color:var(--fg); background:#0d1117; border:1px solid var(--border); border-radius:6px; padding:5px 8px"
+          value="${esc(reasonDrafts[s.id]||"")}" oninput="reasonDrafts[${s.id}]=this.value">
+        <button class="approve" ${s.can_approve ? "" : "disabled style='opacity:.45;cursor:not-allowed'"}
+          title="${esc(s.can_approve ? "" : s.approve_block)}" onclick="decideStrategy(${s.id},'approve')">Approve</button>
+        <button class="reject" onclick="decideStrategy(${s.id},'reject')">Reject</button>
+      </div>
+      ${s.can_approve ? "" : `<div class="muted" style="margin-top:4px;font-size:12px">Approve is locked: ${esc(s.approve_block)}</div>`}
     </div>`).join("");
+}
+
+function renderDrift(d){
+  const box = $("drift");
+  if(!d || !d.available){ box.innerHTML = '<div class="muted">No baseline configured (config/baseline.yaml).</div>'; return; }
+  $("driftBadge").textContent = `${d.n_changed} settings moved · ${d.n_aggressive} more aggressive · ${d.n_cautious} more cautious`;
+  const tone = (dir)=> dir==="more aggressive"||dir==="more concentrated" ? "neg" : (dir==="more cautious" ? "pos" : "muted");
+  let html = `<div class="brief-line">${esc(d.verdict)}</div>
+    <table style="margin-top:6px"><thead><tr><th>setting</th><th>original v${esc(d.baseline_version)}</th><th>live v${esc(d.live_version)}</th><th>leans</th><th>moved by</th></tr></thead><tbody>`
+    + d.rows.map(r=>`<tr${r.changed?"":" class='muted'"}><td>${esc(r.label)}</td><td>${esc(JSON.stringify(r.original))}</td>
+        <td>${r.changed?"<b>":""}${esc(JSON.stringify(r.current))}${r.changed?"</b>":""}</td>
+        <td class="${tone(r.direction)}">${esc(r.direction||"—")}</td>
+        <td>${r.by_agent.length ? '<span class="neg">agent: '+esc(r.by_agent.join("; "))+'</span>' : (r.changed ? '<span class="muted">human edit</span>' : "")}</td></tr>`).join("")
+    + `</tbody></table>`;
+  const bt = d.backtest;
+  if(bt && bt.status==="done"){
+    const o=bt.original, l=bt.live, oo=bt.original_oos, lo=bt.live_oos;
+    html += `<div class="brief-title" style="margin-top:10px">Backtest: original vs live (net, ${bt.start}→${bt.end}; as of ${bt.date})</div>
+      <table><thead><tr><th></th><th>CAGR</th><th>Max DD</th><th>Sharpe</th><th>OOS Sharpe (from ${bt.oos_start})</th><th>turnover</th></tr></thead><tbody>
+      <tr><td>original v${esc(bt.baseline_version)}</td><td>${P1(o.cagr)}</td><td>${P1(o.max_drawdown)}</td><td>${S2(o.sharpe)}</td><td>${S2(oo.sharpe)}</td><td>${o.turnover_annual.toFixed(1)}x</td></tr>
+      <tr><td>live v${esc(bt.live_version)}</td><td class="${cls(l.cagr-o.cagr)}">${P1(l.cagr)}</td><td class="${cls(l.max_drawdown-o.max_drawdown)}">${P1(l.max_drawdown)}</td>
+        <td class="${cls(l.sharpe-o.sharpe)}">${S2(l.sharpe)}</td><td class="${cls(lo.sharpe-oo.sharpe)}">${S2(lo.sharpe)}</td><td>${l.turnover_annual.toFixed(1)}x</td></tr>
+      </tbody></table>`;
+  } else if(bt && bt.status==="error"){
+    html += `<div class="neg" style="margin-top:8px">drift backtest failed: ${esc(bt.error)}</div>`;
+  } else {
+    html += '<div class="muted" style="margin-top:8px">Original-vs-live backtest pending (the worker refreshes it weekly).</div>';
+  }
+  html += '<div style="margin-top:8px"><button onclick="refreshDrift()">Re-run original-vs-live backtest</button></div>';
+  box.innerHTML = html;
+}
+async function decideOption(id, action){
+  let r; try { r = await fetch(`/api/options/${id}/${action}`, {method:"POST"}); } catch(e){ return; }
+  if(!r.ok){ let m="failed"; try{ m=(await r.json()).detail||m; }catch(e){} showToast(`Couldn't ${action}`, esc(m), "hold"); }
+  else showToast(action==="approve"?"Approved — fills at the live quote":"Rejected", "", action==="approve"?"proposed":"hold");
+  lastOptSig = null; refresh();
+}
+async function optionsScreenNow(){
+  try { await fetch("/api/options/screen",{method:"POST"}); showToast("Screen started","The S&P 500 free-cash-flow screen takes ~30s.","proposed"); } catch(e){}
+  setTimeout(()=>{ lastOptSig=null; refresh(); }, 35000);
+}
+let lastOptSig = null;
+function renderOptions(o){
+  const box = $("options");
+  if(!o){ box.innerHTML = '<div class="muted">options stream not available</div>'; return; }
+  const sig = JSON.stringify([o.valuation, o.positions, o.pending.map(p=>[p.id,p.status]), o.screen&&o.screen.date, o.market_open]);
+  if(sig === lastOptSig) return;
+  lastOptSig = sig;
+  const v = o.valuation, c = o.config;
+  $("optBadge").textContent = `${o.pending.length ? o.pending.length+" awaiting · " : ""}${o.positions.length} open`;
+  const stat = (k,val,cl="") => `<div class="stat"><span class="k">${k}</span><span class="v ${cl}">${val}</span></div>`;
+  let html = `<div style="display:flex;gap:18px;flex-wrap:wrap">
+      ${stat("equity", money(v.equity))}${stat("return", pct(v.return), cls(v.return))}${stat("cash", money(v.cash))}
+      ${stat("reserved (put collateral)", money(v.reserved))}${stat("free cash", money(v.free_cash))}
+      ${stat("premium P&L realised", money(v.premium_realised), cls(v.premium_realised))}
+      ${stat("win rate", v.win_rate==null?"—":(v.win_rate*100).toFixed(0)+"%")}${stat("interest", money(v.interest_total))}</div>
+    <div class="muted" style="margin-top:6px;font-size:12px">Rules: up to ${c.max_positions} positions (≤ ${money(c.max_collateral_per_position)} each, ≥ ${c.min_cash_buffer_pct}% cash kept) ·
+      sell ~${Math.round(c.target_delta*100)}-delta options ${c.dte_range[0]}–${c.dte_range[1]} days out, expiring before earnings ·
+      buy back automatically at ${c.take_profit_pct}% profit · ${o.market_open ? '<span class="pos">market open</span>' : 'market closed — proposals and fills wait for live quotes (weekdays, from 10:00 ET)'}</div>`;
+  html += '<div class="brief-title" style="margin-top:12px">Awaiting your approval</div>';
+  html += o.pending.length ? o.pending.map(p=>{ const x=p.context||{};
+      return `<div class="queue-item"><div class="queue-head"><div><b>${p.action==="sell_put"?"Sell cash-secured put":"Sell covered call"}</b>
+        ${esc(p.symbol)} <b>$${p.strike}</b> exp ${p.expiry} · ~${money(p.price)}/share
+        <span class="muted">· ${x.dte} days · delta ${(x.delta||0).toFixed(2)} · ~${Math.round((x.p_expire_worthless||0)*100)}% model chance it expires worthless</span></div>
+        <div class="queue-actions"><button class="approve" onclick="decideOption(${p.id},'approve')">Approve</button>
+        <button class="reject" onclick="decideOption(${p.id},'reject')">Reject</button></div></div>
+        <div style="margin-top:6px">${esc(x.why||"")}</div>
+        ${x.why_company ? `<div class="muted" style="margin-top:4px">Why this company: ${esc(x.why_company)}</div>` : ""}</div>`; }).join("")
+    : '<div class="queue-item empty">No option sales awaiting approval.</div>';
+  html += '<div class="brief-title" style="margin-top:12px">Open positions</div>';
+  html += o.positions.length ? `<table><thead><tr><th>position</th><th>strike</th><th>expiry</th><th>qty</th><th>sold / cost</th><th>mark</th><th>underlying</th><th>unreal.</th><th>captured</th></tr></thead><tbody>`
+      + o.positions.map(p=>`<tr><td>${p.kind==="stock"?"shares":p.kind.replace("_"," ")} ${esc(p.symbol)}</td><td>${p.strike?"$"+p.strike:"—"}</td>
+        <td>${p.expiry?p.expiry+" ("+p.dte+"d)":"—"}</td><td>${p.qty}</td><td>${money(p.open_price)}</td><td>${money(p.mark)}</td>
+        <td>${money(p.underlying)}</td><td class="${cls(p.unrealised)}">${money(p.unrealised)}</td>
+        <td>${p.captured!=null?(p.captured*100).toFixed(0)+"%":(p.effective_basis?"basis "+money(p.effective_basis):"—")}</td></tr>`).join("") + "</tbody></table>"
+    : '<div class="muted">none yet</div>';
+  if(o.closed.length){
+    html += '<div class="brief-title" style="margin-top:12px">Recently closed</div><table><thead><tr><th>position</th><th>strike</th><th>expiry</th><th>outcome</th><th>P&amp;L</th></tr></thead><tbody>'
+      + o.closed.map(p=>`<tr><td>${p.kind.replace("_"," ")} ${esc(p.symbol)}</td><td>${p.strike?"$"+p.strike:"—"}</td><td>${p.expiry||"—"}</td>
+        <td>${esc(p.close_reason)}</td><td class="${cls(p.pnl)}">${money(p.pnl)}</td></tr>`).join("") + "</tbody></table>";
+  }
+  const s = o.screen;
+  html += `<div class="brief-title" style="margin-top:12px">Free-cash-flow screen ${s ? "· "+s.date : ""} <button style="margin-left:8px" onclick="optionsScreenNow()">Re-run screen</button></div>`;
+  if(s){
+    const f = s.funnel;
+    html += `<div class="muted" style="font-size:12px">S&amp;P 500 ${f.sp500} → ${f.ex_fin_reit} ex-financials/REITs → ${f.affordable} affordable (one contract fits a slot) → ${f.healthy_fcf} healthy FCF → <b>${f.passed} not in a downtrend</b>.
+      ${s.excluded_downtrend.length ? "Excluded as falling: "+esc(s.excluded_downtrend.join(", "))+"." : ""}</div>
+      <table style="margin-top:4px"><thead><tr><th>#</th><th>company</th><th>sector</th><th>price</th><th>FCF yield</th><th>FCF margin</th><th>net debt / FCF</th><th>why it qualifies</th></tr></thead><tbody>`
+      + s.candidates.map((x,i)=>`<tr><td>${i+1}</td><td><b>${esc(x.symbol)}</b> ${esc(x.name||"")}</td><td>${esc(x.sector)}</td><td>${money(x.price)}</td>
+        <td>${(x.fcf_yield*100).toFixed(1)}%</td><td>${(x.fcf_margin*100).toFixed(0)}%</td><td>${x.net_debt_to_fcf<0?"net cash":x.net_debt_to_fcf.toFixed(1)+"x"}</td>
+        <td class="muted" style="text-align:left;font-size:12px">${esc(x.why)}</td></tr>`).join("") + "</tbody></table>";
+  } else {
+    html += '<div class="muted">Screen not run yet — the worker runs it on its next tick (about 30s).</div>';
+  }
+  box.innerHTML = html;
+}
+async function refreshDrift(){
+  try { await fetch("/api/drift/refresh",{method:"POST"}); showToast("Drift backtest started","Results appear here in a few seconds.","proposed"); } catch(e){}
+  setTimeout(refresh, 8000);
 }
 
 function renderOpen(rows){
@@ -541,9 +697,15 @@ function renderSpecs(d){
   } else {
     li.push(`<b>Strategy:</b> ${s.type} on ${g.asset||"one asset"} — entries proposed for approval, stop/target exits automatic.`);
   }
-  li.push(`<b>Strategy changes (reflection — need approval):</b> every <b>${r.every}</b> closed trades the agent reviews results and proposes <b>one</b> dial change — or <b>holds</b> when within spec or the sample is too small. Any proposal can be <b>backtested</b> before you approve it — in the dashboard or from Discord.`);
+  li.push(`<b>Strategy changes (reflection — need approval):</b> every <b>${r.every}</b> closed trades the agent reviews results and proposes <b>one</b> dial change — or <b>holds</b> when within spec or the sample is too small (a no-op like 30→30 is never queued).`);
+  li.push(`<b>Every change is backtested before approval:</b> the worker automatically backtests each proposal — original v01 vs current vs proposed, 20 years, net of costs, with an out-of-sample window and crash/rebound regimes. <b>Approve stays locked until the result is shown.</b> If the live strategy changes first, the proposal is re-based and re-backtested, so you never approve against stale numbers.`);
+  li.push(`<b>A reason on every decision:</b> approving or rejecting a strategy change requires one line of reasoning (dashboard box or Discord pop-up). It's stored with the change, logged to <code>state/decisions.jsonl</code>, and shown to the reflection brain so it respects your past verdicts.`);
+  li.push(`<b>Options stream (separate $10K paper book):</b> "the wheel" on S&amp;P 500 companies with healthy, statement-based free cash flow (no financials/REITs, FCF margin 10–60%, yield ≥ 4%, net debt ≤ 3× FCF, positive FCF every year on record, not in a downtrend). Sell ~0.25-delta cash-secured puts 14–50 days out that expire before earnings → if assigned, sell covered calls at or above cost → shares called away → repeat. Max 2 positions, one per sector, ≥ 10% cash kept. <b>Every sale needs your approval</b>; buy-backs at 50% profit, expiries and assignments are automatic. Fills at bid + ¼ spread plus $0.65/contract. Spec: docs/strategy-wheel.md.`);
+  li.push(`<b>Drift vs original:</b> the <b>Drift</b> panel compares every key setting (stop loss, position caps, rolling windows, dropout rank, slots…) with the original v01 design, shows which way each change leans and whether the <i>agent</i> or a human made it, and re-backtests original-vs-live weekly. A summary is in the morning brief.`);
+  li.push(`<b>Net performance:</b> every buy and sell pays ${((d.goal||{}).execution||{}).cost_bps_per_side ?? 5} bps (half-spread + slippage); idle cash earns the 13-week T-bill (interest so far: ${money(d.cash_interest)}); Sharpe ratios are measured in excess of the T-bill rate — in the backtester and the live book alike.`);
   li.push(`<b>Memory (context across trades &amp; versions):</b> every buy proposal records <i>why</i> (momentum rank, score, how the last round-trip in that symbol ended) and the context stays on the filled trade. The reflection brain is shown the full strategy lineage — past changes, your approve/reject verdicts, and per-version performance — so it doesn't re-propose rejected ideas or ping-pong a dial. See the <b>Journal</b> panel.`);
-  li.push(`<b>Morning brief:</b> generated automatically each morning (first tick after 8:00) from the day's data — market trend, rankings, holdings health, what's next in line, active brakes, and what changed since yesterday. Regenerate anytime with <b>Brief now</b>.`);
+  li.push(`<b>Morning brief:</b> generated automatically each morning (first tick after 8:00) from the day's data — market trend, rankings, holdings health, what's next in line, active brakes, headlines, and what changed since yesterday. Regenerate anytime with <b>Brief now</b>.`);
+  if(isRot) li.push(`<b>News &amp; earnings context:</b> approval cards (here and in Discord) and the brief show recent <b>headlines</b> per name and a stock's <b>next earnings date</b> (free via Yahoo, cached) — context only, it changes no ranking, filter, or sizing. Single-stock buys are <b>skipped within ${s.earnings_blackout_days||0} day(s) of earnings</b> to dodge opening right before an earnings gap.`);
   li.push(`<b>vs S&amp;P 500 (fair comparison):</b> every fill snapshots SPY and every close snapshots it again, so each trade is compared against <i>the same dollars in SPY over its own holding window</i>. SPY only competes while a position is open — cash periods count for neither side. Live for open positions; per-trade and aggregate in the <b>vs S&amp;P 500</b> panel.`);
   li.push(`<b>Early brake (buys paused):</b> if SPY drops ≥<b>${P(bs.early_warn_day_pct||-0.05)}</b> in a day, new buys are paused (holdings untouched) — acting <i>before</i> the −7% NYSE Level-1 halt rather than at it. Auto-clears when SPY recovers.`);
   li.push(`<b>Black-swan brake (flatten):</b> flips to cash and halts new buys if SPY drops ≥<b>${P(bs.crash_day_pct||-0.07)}</b> in a day or drawdown ≥<b>${P(bs.max_portfolio_drawdown_pct||0.20)}</b>; auto-resumes when SPY is back above its 200-day average (or you click Resume).`);
@@ -616,20 +778,22 @@ async function refresh(){
     if(show) $("haltReason").textContent = bh.reason || "";
   }
 
-  const pt = d.pending_trades||[], ps = d.pending_strategy||[];
+  const pt = d.pending_trades||[], ps = d.pending_strategy||[], po = (d.options&&d.options.pending)||[];
   // new-item detection for alerts
-  const ids = new Set([...pt.map(t=>"t"+t.id), ...ps.map(s=>"s"+s.id)]);
+  const ids = new Set([...pt.map(t=>"t"+t.id), ...ps.map(s=>"s"+s.id), ...po.map(o=>"o"+o.id)]);
   if(!baselineSet){ ids.forEach(i=>knownPending.add(i)); baselineSet = true; }
   else {
     let fresh_n = 0; ids.forEach(i=>{ if(!knownPending.has(i)) fresh_n++; });
     if(fresh_n>0) notify(fresh_n+" item(s) need your approval");
     knownPending.clear(); ids.forEach(i=>knownPending.add(i));
   }
-  const pend = pt.length + ps.length;
+  const pend = pt.length + ps.length + po.length;
   document.title = pend ? `(${pend}) hermes-trading` : "hermes-trading";
 
   renderPendingTrades(pt);
   renderPendingStrategy(ps, d.backtesting||[]);
+  renderDrift(d.drift);
+  renderOptions(d.options);
   renderBrief(d.brief, d.briefing);
   renderJournal(d.memory);
   renderSpyCompare(d.spy_compare);

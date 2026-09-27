@@ -14,8 +14,11 @@ HISTORY_DIR = STATE_DIR / "history"
 
 GOAL_FILE = CONFIG_DIR / "goal.yaml"
 STRATEGY_FILE = CONFIG_DIR / "strategy.yaml"
+OPTIONS_FILE = CONFIG_DIR / "options.yaml"          # the options stream (the wheel)
 DB_FILE = STATE_DIR / "trading.db"
 HYPOTHESES_FILE = STATE_DIR / "hypotheses.jsonl"
+DECISIONS_FILE = STATE_DIR / "decisions.jsonl"      # append-only audit log of human verdicts
+BASELINE_FILE = CONFIG_DIR / "baseline.yaml"        # the ORIGINAL design, for drift reports
 HEARTBEAT_FILE = STATE_DIR / "heartbeat.json"
 ENV_FILE = ROOT / ".env"
 

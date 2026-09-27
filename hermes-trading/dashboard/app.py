@@ -15,7 +15,8 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from hermes_trading import approval, brief, db, memory, paper_broker, settings, spy_compare
+from hermes_trading import approval, brief, db, drift, memory, paper_broker, review, settings, spy_compare, wheel
+from hermes_trading import execution as ex
 from hermes_trading.config import load_goal, load_strategy
 from hermes_trading.loop import RISK_CHECK_SECONDS, TICK_SECONDS
 from hermes_trading.paths import HEARTBEAT_FILE, STATE_DIR, ensure_dirs
@@ -105,6 +106,18 @@ def state() -> JSONResponse:
             except (json.JSONDecodeError, TypeError):
                 t["context"] = None
 
+        # strategy proposals: attach the auto-backtest + whether approval is allowed yet
+        pending_strategy = approval.list_pending_strategy(conn)
+        for s in pending_strategy:
+            s["backtest"] = review.backtest_of(s)
+            s["bt_status"] = review.bt_status(s)
+            s["stale"] = review.is_stale(s, strat)
+            s["can_approve"], s["approve_block"] = review.can_approve(s, strat)
+            try:
+                s["changes"] = json.loads(s["changes_json"]) if s.get("changes_json") else None
+            except (json.JSONDecodeError, TypeError):
+                s["changes"] = None
+
         closed = db.rows_to_dicts(
             conn.execute(
                 "SELECT * FROM trades WHERE status='closed' ORDER BY exit_ts DESC LIMIT 50"
@@ -146,7 +159,10 @@ def state() -> JSONResponse:
                 "open_positions": open_pos,
                 "closed_trades": closed,
                 "pending_trades": pending_trades,
-                "pending_strategy": approval.list_pending_strategy(conn),
+                "pending_strategy": pending_strategy,
+                "drift": drift.report(conn, strat),
+                "options": wheel.state(conn),
+                "cash_interest": round(ex.accrued_interest(conn), 2),
                 "brief": brief.latest(conn),
                 "briefing": _briefing,
                 # heartbeat "last" is the benchmark price in rotation mode — the
@@ -209,15 +225,12 @@ def clear_risk_off() -> dict[str, bool]:
 
 @app.post("/api/strategy/{prop_id}/backtest")
 def backtest_strategy(prop_id: int) -> dict[str, str]:
-    """Backtest a proposed change vs the current strategy; cache result on the row."""
+    """(Re-)run a proposal's backtest now. Proposals are backtested automatically by
+    the worker; this is the manual re-run (e.g. after a failed fetch)."""
     conn = db.connect()
     try:
-        row = conn.execute(
-            "SELECT proposed_yaml FROM pending_strategy WHERE id=?", (prop_id,)
-        ).fetchone()
-        if not row:
+        if not review.fetch(conn, prop_id):
             raise HTTPException(404, f"pending strategy {prop_id} not found")
-        proposed_yaml = row["proposed_yaml"]
     finally:
         conn.close()
 
@@ -227,30 +240,35 @@ def backtest_strategy(prop_id: int) -> dict[str, str]:
         _bt_running.add(prop_id)
 
     def _run() -> None:
-        import yaml
-        from hermes_trading.backtest import compare
-        from hermes_trading.config import load_strategy
-
         try:
-            current = load_strategy()
-            proposed = yaml.safe_load(proposed_yaml)
-            if proposed.get("type") != "relative_strength_rotation":
-                result = {"error": "backtest only supported for the rotation strategy"}
-            else:
-                result = compare(current, proposed, years=10)
-        except Exception as exc:  # noqa: BLE001
-            result = {"error": str(exc)[:300]}
-        c = db.connect()
-        try:
-            c.execute(
-                "UPDATE pending_strategy SET backtest_json=? WHERE id=?",
-                (json.dumps(result), prop_id),
-            )
-            c.commit()
+            review.run_backtest(prop_id, force=True)
         finally:
-            c.close()
-        with _bt_lock:
-            _bt_running.discard(prop_id)
+            with _bt_lock:
+                _bt_running.discard(prop_id)
+
+    threading.Thread(target=_run, daemon=True).start()
+    return {"status": "started"}
+
+
+_drift_lock = threading.Lock()
+_drift_running = False
+
+
+@app.post("/api/drift/refresh")
+def drift_refresh() -> dict[str, str]:
+    """Re-run the original-vs-live backtest now (normally refreshed weekly)."""
+    global _drift_running
+    with _drift_lock:
+        if _drift_running:
+            raise HTTPException(409, "drift backtest already running")
+        _drift_running = True
+
+    def _run() -> None:
+        global _drift_running
+        try:
+            drift.refresh()
+        finally:
+            _drift_running = False
 
     threading.Thread(target=_run, daemon=True).start()
     return {"status": "started"}
@@ -359,29 +377,78 @@ def _set_trade(pending_id: int, status: str) -> dict[str, str]:
         conn.close()
 
 
+@app.post("/api/options/{pid}/approve")
+def approve_option(pid: int) -> dict[str, str]:
+    return _decide_option(pid, "approve")
+
+
+@app.post("/api/options/{pid}/reject")
+def reject_option(pid: int) -> dict[str, str]:
+    return _decide_option(pid, "reject")
+
+
+def _decide_option(pid: int, action: str) -> dict[str, str]:
+    """Options stream: approve/reject a proposed option sale (the worker fills it at the
+    live quote on its next tick during market hours)."""
+    conn = db.connect()
+    try:
+        ok, msg = wheel.decide(conn, pid, action)
+        if not ok:
+            raise HTTPException(409, msg)
+        return {"id": str(pid), "status": msg}
+    finally:
+        conn.close()
+
+
+_screen_lock = threading.Lock()
+_screen_running = False
+
+
+@app.post("/api/options/screen")
+def options_screen_now() -> dict[str, str]:
+    """Re-run the free-cash-flow screen now (normally weekly)."""
+    global _screen_running
+    with _screen_lock:
+        if _screen_running:
+            raise HTTPException(409, "screen already running")
+        _screen_running = True
+
+    def _run() -> None:
+        global _screen_running
+        from hermes_trading import wheel_book, wheel_screen
+        try:
+            wheel_screen.refresh(wheel_book.load_config())
+        finally:
+            _screen_running = False
+
+    threading.Thread(target=_run, daemon=True).start()
+    return {"status": "started"}
+
+
+class DecisionIn(BaseModel):
+    reason: str | None = None
+
+
 @app.post("/api/strategy/{prop_id}/approve")
-def approve_strategy(prop_id: int) -> dict[str, str]:
-    return _set_strategy(prop_id, "approved")
+def approve_strategy(prop_id: int, payload: DecisionIn | None = None) -> dict[str, str]:
+    return _decide_strategy(prop_id, "approve", payload)
 
 
 @app.post("/api/strategy/{prop_id}/reject")
-def reject_strategy(prop_id: int) -> dict[str, str]:
-    return _set_strategy(prop_id, "rejected")
+def reject_strategy(prop_id: int, payload: DecisionIn | None = None) -> dict[str, str]:
+    return _decide_strategy(prop_id, "reject", payload)
 
 
-def _set_strategy(prop_id: int, status: str) -> dict[str, str]:
+def _decide_strategy(prop_id: int, action: str, payload: DecisionIn | None) -> dict[str, str]:
+    """Approve/reject a strategy change. Requires a one-line reason; approval also
+    requires a finished backtest against the live config (see hermes_trading.review)."""
     conn = db.connect()
     try:
-        row = conn.execute(
-            "SELECT status FROM pending_strategy WHERE id=?", (prop_id,)
-        ).fetchone()
-        if not row:
-            raise HTTPException(404, f"pending strategy {prop_id} not found")
-        if row["status"] != "pending":
-            raise HTTPException(409, f"strategy {prop_id} already {row['status']}")
-        approval.set_strategy_status(conn, prop_id, status)
-        conn.commit()
-        return {"id": str(prop_id), "status": status}
+        ok, msg = review.decide(conn, prop_id, action, payload.reason if payload else None, "dashboard")
+        if not ok:
+            code = 404 if msg == "proposal not found" else (409 if msg.startswith("already") else 400)
+            raise HTTPException(code, msg)
+        return {"id": str(prop_id), "status": msg}
     finally:
         conn.close()
 
