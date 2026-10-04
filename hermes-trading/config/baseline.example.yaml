@@ -1,3 +1,4 @@
+# Template — copied to config/baseline.yaml (git-ignored) on first run.
 # The ORIGINAL SRSR design (v01) — the fixed yardstick for drift reports.
 # Do NOT edit this to match the live strategy: its whole purpose is to answer
 # "how far — and in which direction — have we moved from the original intent?"

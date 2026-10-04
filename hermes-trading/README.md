@@ -36,7 +36,10 @@ real money.
   `config/options.yaml`.
 
 State lives in `state/trading.db` (SQLite, WAL). Config is `config/goal.yaml`,
-`config/strategy.yaml` and `config/options.yaml`.
+`config/strategy.yaml`, `config/options.yaml` and `config/baseline.yaml`. These are your
+personal, live-tuned files and are git-ignored. The repo ships `config/*.example.yaml`
+templates instead, and any missing live file is created from its template on first run.
+The starter strategy is the original v01 design.
 
 ## Setup (Windows, Python 3.10+)
 

@@ -1,0 +1,19 @@
+# Starter strategy — the original SRSR design (v01). On first run this file is copied to
+# config/strategy.yaml (git-ignored), which then evolves through your approved changes.
+# Every setting is documented in docs/strategy-srsr.md §9; a single-stock sleeve can be
+# added with `stocks:`, `stock_notional_cap_pct`, `stock_catastrophe_stop_pct` and
+# `max_stock_positions` (see §1a).
+version: "01"
+type: relative_strength_rotation
+universe: [XLK, XLF, XLV, XLE, XLI, XLY, XLP, XLU, XLB, XLRE, XLC]
+benchmark: SPY
+momentum_lookbacks_days: [63, 126]   # 3-month + 6-month blend
+trend_sma_days: 200                  # absolute-trend filter
+hold_top_n: 3                        # slots
+exit_rank_n: 4                       # dropout rank: sell when out of the top 4
+rebalance: weekly
+sizing: equal_weight
+rank_power: 1
+position_notional_cap_pct: 35        # per-position cap
+catastrophe_stop_pct: 15             # stop loss below entry
+max_positions: 3
