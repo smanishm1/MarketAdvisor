@@ -41,7 +41,7 @@ except ModuleNotFoundError:  # pragma: no cover - friendly message if the extra 
         '    .venv/Scripts/python -m pip install -e ".[discord]"'
     )
 
-from . import db
+from . import db, review
 from .paths import load_env
 
 POLL_SECONDS = int(os.environ.get("DISCORD_POLL_SECONDS", "5"))
@@ -53,7 +53,7 @@ YELLOW = 0xD29922
 BLUE = 0x58A6FF
 
 # kind -> (table name). Both tables share the columns we touch (status, resolved_ts).
-_TABLE = {"trade": "pending_trades", "strategy": "pending_strategy"}
+_TABLE = {"trade": "pending_trades", "strategy": "pending_strategy", "option": "opt_pending"}
 
 # strategy ids with a backtest in flight — guards against double-clicking Backtest
 _bt_running: set[int] = set()
@@ -200,6 +200,40 @@ def _pending_embed(kind: str, row: dict[str, Any]) -> "discord.Embed":
             e.add_field(name="RSI", value=f"{float(row['rsi']):.1f}", inline=True)
         e.add_field(name="Strategy", value=f"v{row['strategy_version']}", inline=True)
         e.add_field(name="Proposed", value=f"<t:{int(float(row['proposed_ts']))}:R>", inline=True)
+        # news + earnings context (carried on the proposal), if present
+        try:
+            ctx = json.loads(row.get("context") or "{}")
+        except (ValueError, TypeError):
+            ctx = {}
+        if ctx.get("earnings"):
+            e.add_field(name="Next earnings", value=str(ctx["earnings"]), inline=True)
+        items = ctx.get("news") or []
+        if items:
+            lines = []
+            for h in items[:3]:
+                title = str(h.get("title", ""))[:120]
+                url = h.get("url")
+                lines.append(f"• [{title}]({url})" if url else f"• {title}")
+            e.add_field(name="📰 Headlines", value="\n".join(lines)[:1024], inline=False)
+    elif kind == "option":
+        try:
+            ctx = json.loads(row.get("context") or "{}")
+        except (ValueError, TypeError):
+            ctx = {}
+        what = "Sell cash-secured put" if row["action"] == "sell_put" else "Sell covered call"
+        e = discord.Embed(title=f"🎯 Options stream: {what} — needs approval", color=YELLOW)
+        e.add_field(name="Contract", value=f"**{row['symbol']}** ${float(row['strike']):g} exp {row['expiry']}", inline=True)
+        e.add_field(name="Premium", value=f"~{_money(row['price'])}/sh ({_money(ctx.get('premium_total'))} net)", inline=True)
+        e.add_field(name="Odds", value=f"delta {float(ctx.get('delta') or 0):.2f} · ~{float(ctx.get('p_expire_worthless') or 0):.0%} "
+                                       f"expires worthless", inline=True)
+        if row["action"] == "sell_put":
+            e.add_field(name="Collateral", value=_money(ctx.get("collateral")), inline=True)
+            e.add_field(name="Breakeven", value=_money(ctx.get("breakeven")), inline=True)
+        e.add_field(name="Next earnings", value=str(ctx.get("earnings") or "n/a"), inline=True)
+        if ctx.get("why"):
+            e.add_field(name="What happens", value=str(ctx["why"])[:1024], inline=False)
+        if ctx.get("why_company"):
+            e.add_field(name="Why this company", value=str(ctx["why_company"])[:1024], inline=False)
     else:
         e = discord.Embed(title="🧠 Strategy change needs approval", color=BLUE)
         e.add_field(name="Source", value=str(row["source"]), inline=True)
@@ -225,10 +259,17 @@ def _final_embed(kind: str, row: dict[str, Any] | None, status: str, who: str) -
         desc = f"**{row['symbol']}** {row['side']} · {float(row['size']):.6f} @ {_money(row['price'])}"
     elif kind == "strategy" and row:
         desc = f"`{row['variable']}`  {row['old_value']} → **{row['new_value']}**  (v{row['to_version']})"
+    elif kind == "option" and row:
+        what = "put" if row["action"] == "sell_put" else "covered call"
+        desc = f"Sell **{row['symbol']}** ${float(row['strike']):g} {what} exp {row['expiry']} @ ~{_money(row['price'])}"
+        if status in ("expired", "stale"):
+            title, color = "⌛ Expired — not filled", YELLOW
     else:
         desc = ""
     e = discord.Embed(title=title, description=desc, color=color)
-    label = "trade" if kind == "trade" else "strategy change"
+    if row and row.get("decision_reason"):
+        e.add_field(name="Reason", value=str(row["decision_reason"])[:1000], inline=False)
+    label = {"trade": "trade", "strategy": "strategy change", "option": "options-stream sale"}.get(kind, kind)
     e.set_footer(text=f"{label} #{row['id'] if row else '?'} · {status} by {who}")
     return e
 
@@ -237,32 +278,11 @@ def _final_embed(kind: str, row: dict[str, Any] | None, status: str, who: str) -
 # Backtest (strategy cards) — mirrors the dashboard's current-vs-proposed compare
 # --------------------------------------------------------------------------- #
 
-def _run_backtest(proposed_yaml: str) -> dict[str, Any]:
-    """Backtest current vs proposed over 10y (full period + held-out OOS). Blocking;
-    call via asyncio.to_thread. Returns the compare() result or {'error': ...}."""
-    import yaml
-
-    from .backtest import compare
-    from .config import load_strategy
-
-    try:
-        proposed = yaml.safe_load(proposed_yaml) or {}
-        if proposed.get("type") != "relative_strength_rotation":
-            return {"error": "backtest only supported for the rotation strategy"}
-        return compare(load_strategy(), proposed, years=10)
-    except Exception as exc:  # noqa: BLE001 — surface the message, never crash the bot
-        return {"error": str(exc)[:300]}
-
-
-def _save_backtest(ref_id: int, result: dict[str, Any]) -> None:
-    """Cache the result on the row so the dashboard shows the same numbers."""
+def _decide(ref_id: int, action: str, reason: str, who: str) -> tuple[bool, str]:
+    """Record a strategy verdict through the shared review gate (blocking)."""
     conn = db.connect()
     try:
-        conn.execute(
-            "UPDATE pending_strategy SET backtest_json=? WHERE id=?",
-            (json.dumps(result), ref_id),
-        )
-        conn.commit()
+        return review.decide(conn, ref_id, action, reason, f"discord ({who})")
     finally:
         conn.close()
 
@@ -274,32 +294,52 @@ def _pct(x: Any) -> str:
         return "—"
 
 
-def _backtest_field(embed: "discord.Embed", bt: dict[str, Any] | None) -> None:
-    """Add a backtest summary field to a strategy embed (full period + OOS verdict)."""
-    if not bt or bt.get("error"):
-        embed.add_field(
-            name="📊 Backtest", value=f"⚠️ {bt.get('error', 'failed') if bt else 'failed'}",
-            inline=False,
-        )
+def _backtest_state(row: dict[str, Any]) -> tuple:
+    """Fingerprint of what the card should show — re-render only when it changes."""
+    bt = review.backtest_of(row) or {}
+    return (review.is_stale(row), review.bt_status(row), bt.get("ts"))
+
+
+def _backtest_field(embed: "discord.Embed", row: dict[str, Any]) -> None:
+    """The auto-backtest on a strategy card: pending / failed / result (net of costs,
+    full + out-of-sample + regimes, with the original v01 for drift context)."""
+    st, bt = review.bt_status(row), review.backtest_of(row) or {}
+    if review.is_stale(row):
+        embed.add_field(name="📊 Backtest", inline=False,
+                        value="↻ The live strategy changed since this was proposed — re-basing and re-backtesting…")
         return
-    c, p = bt["current"], bt["proposed"]
+    if st in ("missing", "running"):
+        embed.add_field(name="📊 Backtest", inline=False,
+                        value="⏳ Backtesting (20y, net of costs)… **Approve unlocks when the result is in.**")
+        return
+    if st == "error":
+        embed.add_field(name="📊 Backtest", inline=False,
+                        value=f"⚠️ backtest failed: {bt.get('error', '?')} — press **Re-run backtest**. Approve is locked.")
+        return
+    c, p, co, po = bt["current"], bt["proposed"], bt["current_oos"], bt["proposed_oos"]
+    a = bt.get("assumptions", {})
+    better = po["sharpe"] > co["sharpe"]
     lines = [
-        f"**Full** {bt['start']}→{bt['end']}",
-        f"CAGR {_pct(c['cagr'])}→**{_pct(p['cagr'])}** · "
+        f"_net of {a.get('cost_bps_per_side', '?')} bps/side costs · cash earns T-bill · Sharpe vs T-bill_",
+        f"**Full** {bt['start']}→{bt['end']}: CAGR {_pct(c['cagr'])}→**{_pct(p['cagr'])}** · "
         f"maxDD {_pct(c['max_drawdown'])}→**{_pct(p['max_drawdown'])}** · "
-        f"Sharpe {c['sharpe']:.2f}→**{p['sharpe']:.2f}**",
+        f"Sharpe {c['sharpe']:.2f}→**{p['sharpe']:.2f}** · turnover "
+        f"{c['turnover_annual']:.1f}x→{p['turnover_annual']:.1f}x",
+        f"**Out-of-sample** from {bt['oos_start']}: Sharpe {co['sharpe']:.2f}→**{po['sharpe']:.2f}** "
+        f"— {'improves OOS ✅' if better else 'does NOT improve OOS ❌'}",
     ]
-    co, po = bt.get("current_oos"), bt.get("proposed_oos")
-    if co and po:
-        better = po["sharpe"] > co["sharpe"]
-        verdict = "holds up out-of-sample ✅" if better else "does NOT improve OOS ❌ (likely overfit)"
-        lines.append(
-            f"\n**Out-of-sample** (from {bt['oos_start']} — the trustworthy test)\n"
-            f"CAGR {_pct(co['cagr'])}→**{_pct(po['cagr'])}** · "
-            f"maxDD {_pct(co['max_drawdown'])}→**{_pct(po['max_drawdown'])}** · "
-            f"Sharpe {co['sharpe']:.2f}→**{po['sharpe']:.2f}** — {verdict}"
-        )
-    embed.add_field(name="📊 Backtest (10y)", value="\n".join(lines)[:1024], inline=False)
+    rc = {r["regime"]: r for r in (bt.get("regimes") or {}).get("current", [])}
+    rp = {r["regime"]: r for r in (bt.get("regimes") or {}).get("proposed", [])}
+    reg = [f"{name.split(' ')[0]} {_pct(rc[name]['return'])}→{_pct(rp[name]['return'])}"
+           for name in rc if name in rp and ("crash" in name or "bear" in name or "rebound" in name)]
+    if reg:
+        lines.append("Regimes (current→proposed): " + " · ".join(reg))
+    b, bo = bt.get("baseline"), bt.get("baseline_oos")
+    if b and bo:
+        lines.append(f"Original v01 for reference: Sharpe {b['sharpe']:.2f} (OOS {bo['sharpe']:.2f}) · "
+                     f"maxDD {_pct(b['max_drawdown'])}")
+    embed.add_field(name=f"📊 Backtest ({bt.get('years', '?')}y, net) — approval unlocked",
+                    value="\n".join(lines)[:1024], inline=False)
 
 
 # --------------------------------------------------------------------------- #
@@ -350,52 +390,80 @@ class ApprovalView(discord.ui.View):
         else:
             await interaction.response.send_message("That item no longer exists.", ephemeral=True)
 
+    async def _strategy_verdict(self, interaction: "discord.Interaction", action: str) -> None:
+        """Strategy changes: approval needs a finished backtest; both verdicts need a reason."""
+        row = await asyncio.to_thread(_fetch_row, "strategy", self.ref_id)
+        if not row or row["status"] != "pending":
+            await interaction.response.send_message("This proposal is no longer pending.", ephemeral=True)
+            return
+        if action == "approve":
+            ok, why = await asyncio.to_thread(review.can_approve, row)
+            if not ok:
+                await interaction.response.send_message(f"🔒 Approve is locked: {why}", ephemeral=True)
+                return
+        await interaction.response.send_modal(ReasonModal(self, action))
+
     @discord.ui.button(label="Approve", style=discord.ButtonStyle.success, custom_id="hermes:approve")
     async def approve(self, interaction: "discord.Interaction", _button: "discord.ui.Button") -> None:
-        await self._act(interaction, "approve")
+        if self.kind == "strategy":
+            await self._strategy_verdict(interaction, "approve")
+        else:
+            await self._act(interaction, "approve")
 
     @discord.ui.button(label="Reject", style=discord.ButtonStyle.danger, custom_id="hermes:reject")
     async def reject(self, interaction: "discord.Interaction", _button: "discord.ui.Button") -> None:
-        await self._act(interaction, "reject")
+        if self.kind == "strategy":
+            await self._strategy_verdict(interaction, "reject")
+        else:
+            await self._act(interaction, "reject")
 
-    @discord.ui.button(label="Backtest 10y", style=discord.ButtonStyle.secondary, custom_id="hermes:backtest")
+    @discord.ui.button(label="Re-run backtest", style=discord.ButtonStyle.secondary, custom_id="hermes:backtest")
     async def backtest(self, interaction: "discord.Interaction", button: "discord.ui.Button") -> None:
+        """Proposals are backtested automatically; this forces a fresh run (e.g. after a failure)."""
         ref_id = self.ref_id
         if ref_id in _bt_running:
-            await interaction.response.send_message(
-                "A backtest is already running for this proposal…", ephemeral=True
-            )
+            await interaction.response.send_message("A backtest is already running for this proposal…", ephemeral=True)
             return
         row = await asyncio.to_thread(_fetch_row, "strategy", ref_id)
         if not row or row["status"] != "pending":
-            await interaction.response.send_message(
-                "This proposal is no longer pending.", ephemeral=True
-            )
+            await interaction.response.send_message("This proposal is no longer pending.", ephemeral=True)
             return
-
-        # ack within 3s: disable the button + show progress, keep Approve/Reject live
         _bt_running.add(ref_id)
-        button.disabled = True
-        button.label = "Backtesting… (~30s)"
-        await interaction.response.edit_message(view=self)
+        await interaction.response.send_message("⏳ Re-running the backtest (20y, net)… the card updates when done.", ephemeral=True)
         try:
-            result = await asyncio.to_thread(_run_backtest, row["proposed_yaml"])
-            await asyncio.to_thread(_save_backtest, ref_id, result)
+            await asyncio.to_thread(review.run_backtest, ref_id, True)
         finally:
             _bt_running.discard(ref_id)
-            button.disabled = False
-            button.label = "Backtest 10y"
+        # the poll loop re-renders the card from the stored result
 
-        # if it was approved/rejected while the backtest ran, leave the final card alone
-        fresh = await asyncio.to_thread(_fetch_row, "strategy", ref_id)
-        if not fresh or fresh["status"] != "pending":
+
+class ReasonModal(discord.ui.Modal):
+    """One line of reasoning, required for every strategy verdict made in Discord."""
+
+    def __init__(self, view: "ApprovalView", action: str) -> None:
+        verb = "Approve" if action == "approve" else "Reject"
+        super().__init__(title=f"{verb} strategy change #{view.ref_id}", timeout=600)
+        self.view_ref = view
+        self.action = action
+        self.reason = discord.ui.TextInput(
+            label="One line of reasoning (required)",
+            style=discord.TextStyle.short,
+            min_length=review.MIN_REASON_CHARS,
+            max_length=review.MAX_REASON_CHARS,
+            placeholder="e.g. OOS Sharpe up, turnover down; accept ~1pt deeper drawdown",
+        )
+        self.add_item(self.reason)
+
+    async def on_submit(self, interaction: "discord.Interaction") -> None:
+        who = interaction.user.display_name
+        ok, msg = await asyncio.to_thread(_decide, self.view_ref.ref_id, self.action, str(self.reason.value), who)
+        if not ok:
+            await interaction.response.send_message(f"Not recorded — {msg}", ephemeral=True)
             return
-        embed = _pending_embed("strategy", fresh)
-        _backtest_field(embed, result)
-        try:
-            await interaction.edit_original_response(embed=embed, view=self)
-        except discord.HTTPException:
-            pass
+        row = await asyncio.to_thread(_fetch_row, "strategy", self.view_ref.ref_id)
+        await interaction.response.edit_message(embed=_final_embed("strategy", row, msg, who), view=None)
+        await asyncio.to_thread(_mark_resolved, "strategy", self.view_ref.ref_id)
+        self.view_ref.stop()
 
 
 # --------------------------------------------------------------------------- #
@@ -409,6 +477,7 @@ class HermesBot(discord.Client):
         super().__init__(intents=discord.Intents.default(), connector=connector)
         self.channel_id = channel_id
         self._poller: asyncio.Task | None = None
+        self._rendered: dict[int, tuple] = {}   # strategy card -> backtest state last shown
 
     async def setup_hook(self) -> None:
         # Re-bind persistent views to their messages so clicks work after a restart.
@@ -443,17 +512,32 @@ class HermesBot(discord.Client):
         while not self.is_closed():
             try:
                 # 1) post newly-pending items
-                for kind in ("trade", "strategy"):
+                for kind in ("trade", "strategy", "option"):
                     for row in await asyncio.to_thread(_unposted_pending, kind):
-                        msg = await channel.send(
-                            embed=_pending_embed(kind, row),
-                            view=ApprovalView(kind, int(row["id"])),
-                        )
+                        embed = _pending_embed(kind, row)
+                        if kind == "strategy":
+                            await asyncio.to_thread(_backtest_field, embed, row)
+                            self._rendered[int(row["id"])] = await asyncio.to_thread(_backtest_state, row)
+                        msg = await channel.send(embed=embed, view=ApprovalView(kind, int(row["id"])))
                         await asyncio.to_thread(_record_post, kind, int(row["id"]), msg.id)
 
                 # 2) reconcile anything resolved in the dashboard (or filled by the worker)
                 for post in await asyncio.to_thread(_open_posts):
                     status = await asyncio.to_thread(_status, post["kind"], int(post["ref_id"]))
+                    if status == "pending" and post["kind"] == "strategy":
+                        # auto-backtest progressed (queued -> result, or re-based)? refresh the card
+                        pid = int(post["ref_id"])
+                        row = await asyncio.to_thread(_fetch_row, "strategy", pid)
+                        state = await asyncio.to_thread(_backtest_state, row)
+                        if row and self._rendered.get(pid) != state:
+                            embed = _pending_embed("strategy", row)
+                            await asyncio.to_thread(_backtest_field, embed, row)
+                            try:
+                                await channel.get_partial_message(int(post["message_id"])).edit(embed=embed)
+                                self._rendered[pid] = state
+                            except discord.NotFound:
+                                pass
+                        continue
                     if status and status != "pending":
                         row = await asyncio.to_thread(_fetch_row, post["kind"], int(post["ref_id"]))
                         msg = channel.get_partial_message(int(post["message_id"]))

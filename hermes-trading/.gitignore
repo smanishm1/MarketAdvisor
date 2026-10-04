@@ -7,6 +7,13 @@ state/trading.db-wal
 state/trading.db-shm
 state/history/
 state/hypotheses.jsonl
+state/decisions.jsonl
+
+# personal live config (tuned by your approvals) — the repo ships *.example.yaml templates
+config/goal.yaml
+config/strategy.yaml
+config/options.yaml
+config/baseline.yaml
 
 # runtime logs & generated artifacts
 *.log

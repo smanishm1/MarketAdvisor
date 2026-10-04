@@ -14,10 +14,28 @@ HISTORY_DIR = STATE_DIR / "history"
 
 GOAL_FILE = CONFIG_DIR / "goal.yaml"
 STRATEGY_FILE = CONFIG_DIR / "strategy.yaml"
+OPTIONS_FILE = CONFIG_DIR / "options.yaml"          # the options stream (the wheel)
 DB_FILE = STATE_DIR / "trading.db"
 HYPOTHESES_FILE = STATE_DIR / "hypotheses.jsonl"
+DECISIONS_FILE = STATE_DIR / "decisions.jsonl"      # append-only audit log of human verdicts
+BASELINE_FILE = CONFIG_DIR / "baseline.yaml"        # the ORIGINAL design, for drift reports
 HEARTBEAT_FILE = STATE_DIR / "heartbeat.json"
 ENV_FILE = ROOT / ".env"
+
+# Your live config files are personal (tuned by your approvals) and git-ignored; the repo
+# ships `<name>.example.yaml` templates. A missing live file is created from its template.
+_TEMPLATED = (GOAL_FILE, STRATEGY_FILE, OPTIONS_FILE, BASELINE_FILE)
+
+
+def ensure_config() -> None:
+    """Create any missing live config file from its .example.yaml template (never overwrites)."""
+    for live in _TEMPLATED:
+        template = live.with_name(live.stem + ".example.yaml")
+        if not live.exists() and template.exists():
+            live.write_bytes(template.read_bytes())
+
+
+ensure_config()
 
 
 def ensure_dirs() -> None:

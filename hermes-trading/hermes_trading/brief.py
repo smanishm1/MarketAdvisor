@@ -16,7 +16,7 @@ import json
 import sqlite3
 from typing import Any
 
-from . import approval, db, memory, paper_broker, srsr
+from . import approval, db, drift, memory, news, paper_broker, srsr
 
 # generate the daily brief on the first tick at/after this local hour ("morning")
 BRIEF_HOUR = 8
@@ -102,6 +102,16 @@ def compose(conn: sqlite3.Connection, cfg: dict[str, Any], data: dict[str, Any])
         else f"Next rebalance: Friday {next_reb.isoformat()}."
     )
 
+    # --- headlines (news context for held names + what's next in line) ------------
+    head_syms = list(dict.fromkeys(held + next_up))[:6]
+    head_lines: list[str] = []
+    for s in head_syms:
+        for h in news.headlines(s, 2):
+            when = f" ({h['date']})" if h.get("date") else ""
+            head_lines.append(f"{tag(s)}: {h['title']}{when}")
+    if not head_lines:
+        head_lines.append("No fresh headlines for held names / candidates.")
+
     # --- risk ---------------------------------------------------------------------
     risk_lines: list[str] = []
     if db.get_meta(conn, "risk_off", "0") == "1":
@@ -164,10 +174,42 @@ def compose(conn: sqlite3.Connection, cfg: dict[str, Any], data: dict[str, Any])
             {"title": "Rankings (momentum)", "lines": rank_lines},
             {"title": "Holdings", "lines": holding_lines},
             {"title": "Watch", "lines": watch_lines},
+            {"title": "Headlines", "lines": head_lines},
             {"title": "Risk", "lines": risk_lines},
+            {"title": "Drift vs original design", "lines": _drift_lines(conn)},
+            {"title": "Options stream (the wheel)", "lines": _options_lines(conn)},
             {"title": "Since yesterday", "lines": recap_lines},
         ],
     }
+
+
+def _drift_lines(conn: sqlite3.Connection) -> list[str]:
+    try:
+        return drift.brief_lines(conn)
+    except Exception as exc:  # noqa: BLE001 — the brief must never fail on a report
+        return [f"Drift report unavailable: {exc}"]
+
+
+def _options_lines(conn: sqlite3.Connection) -> list[str]:
+    try:
+        from . import wheel   # local import: keeps the brief importable without yfinance option code paths
+        s = wheel.state(conn)
+        v = s["valuation"]
+        out = [f"Equity ${v['equity']:,.2f} ({v['return']:+.2%}) · cash ${v['cash']:,.2f} of which "
+               f"${v['reserved']:,.0f} reserved as put collateral · realised premium P&L ${v['premium_realised']:+,.2f}"]
+        for p in s["positions"]:
+            if p["kind"] == "stock":
+                out.append(f"Holding {int(p['qty'])} {p['symbol']} (assigned @ ${p['open_price']:g}) — covered calls next")
+            else:
+                out.append(f"Short {p['symbol']} ${p['strike']:g} {p['kind'].split('_')[1]} exp {p['expiry']} "
+                           f"({p.get('dte', '?')}d) · {100 * (p.get('captured') or 0):.0f}% of premium captured")
+        if s["pending"]:
+            out.append(f"{len(s['pending'])} option sale(s) awaiting your approval")
+        if s["screen"] and s["screen"]["candidates"]:
+            out.append("FCF screen top 5: " + ", ".join(c["symbol"] for c in s["screen"]["candidates"][:5]))
+        return out
+    except Exception as exc:  # noqa: BLE001
+        return [f"Options stream unavailable: {exc}"]
 
 
 def store(conn: sqlite3.Connection, brief: dict[str, Any]) -> None:

@@ -31,9 +31,17 @@ def max_drawdown(equity_curve: list[float]) -> float:
     return mdd
 
 
-def sharpe(trades: list[dict[str, Any]]) -> float:
-    """Naive per-trade Sharpe from realised pnl_pct (mean / std)."""
-    rets = [t["pnl_pct"] for t in trades if t.get("status") == "closed" and t.get("pnl_pct") is not None]
+def sharpe(trades: list[dict[str, Any]], rf_annual: float = 0.0) -> float:
+    """Per-trade Sharpe on EXCESS returns: each trade's pnl_pct minus what the
+    risk-free rate would have earned over that trade's holding period."""
+    rets = []
+    for t in trades:
+        if t.get("status") != "closed" or t.get("pnl_pct") is None:
+            continue
+        held_days = 0.0
+        if t.get("entry_ts") is not None and t.get("exit_ts") is not None:
+            held_days = max(0.0, (float(t["exit_ts"]) - float(t["entry_ts"])) / 86400.0)
+        rets.append(float(t["pnl_pct"]) - rf_annual * held_days / 365.0)
     if len(rets) < 2:
         return 0.0
     mean = sum(rets) / len(rets)
@@ -46,11 +54,15 @@ def score(
     trades: list[dict[str, Any]],
     goal: dict[str, Any],
     equity_curve: list[float] | None = None,
+    rf_annual: float | None = None,
 ) -> dict[str, Any]:
     """Composite score in [-1, +1] plus the components that produced it."""
+    if rf_annual is None:
+        from . import execution as ex
+        rf_annual = ex.latest_annual(ex.settings(goal)["risk_free"])
     ret = realised_return(trades)
     mdd = max_drawdown(equity_curve or [])
-    shp = sharpe(trades)
+    shp = sharpe(trades, rf_annual)
 
     target = goal.get("target_return_30d", 0.05) or 0.05
     max_dd = goal.get("max_drawdown", 0.08) or 0.08
@@ -64,6 +76,8 @@ def score(
     composite = _clip(0.5 * return_score + 0.3 * dd_score + 0.2 * sharpe_score)
     if ret < floor:
         composite = _clip(min(composite, -0.8))  # steeply negative below the floor
+    if not any(t.get("status") == "closed" for t in trades):
+        composite = 0.0   # no finished trades yet = nothing to score (not a free 0.3 for "no drawdown")
 
     return {
         "composite": round(composite, 4),

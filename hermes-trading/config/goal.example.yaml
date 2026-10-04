@@ -1,3 +1,4 @@
+# Template — copied to config/goal.yaml (git-ignored, yours to tune) on first run.
 # What success and failure look like for the SRSR ETF rotation. The agent scores
 # trades against this and reflects on it. Numbers are tuned for ETFs (gentler than
 # the old crypto config).
@@ -17,3 +18,11 @@ black_swan:
   crash_day_pct:               -0.07   # SPY 1-day drop that flips to risk-off (NYSE L1 = -7%)
   max_portfolio_drawdown_pct:   0.20   # equity drawdown from peak that flips to risk-off
   flatten_on_trigger:           true   # auto-sell everything to cash when triggered
+
+# Execution realism — applied to BOTH the backtester and the live paper book, so all
+# reported performance is NET: a trading cost on every buy and sell, interest on idle
+# cash, and Sharpe measured in excess of the risk-free rate. See hermes_trading.execution.
+execution:
+  cost_bps_per_side: 5    # bid/offer half-spread + slippage, per buy AND per sell (10 bps round trip)
+  cash_rate: tbill        # idle cash earns the 13-week T-bill (^IRX, historical); or e.g. 0.04; or 0
+  risk_free: tbill        # Sharpe = return in excess of this rate; same choices as cash_rate

@@ -4,9 +4,13 @@ Pure paper. There is no live-order code path in this module at all — going liv
 would require a separate, deliberately-added execution adapter (see README).
 
 Equity model:
-    equity        = start_equity + realised_pnl + unrealised_pnl
+    equity        = start_equity + realised_pnl + unrealised_pnl + cash_interest
     position_value= sum(size * current_price) for open long positions
     cash          = equity - position_value
+
+Fills are NET of execution costs (hermes_trading.execution): a buy is recorded at
+the quote plus the per-side cost, a sell at the quote minus it, so realised P&L is
+what you'd actually have kept. Idle cash accrues T-bill interest daily.
 """
 from __future__ import annotations
 
@@ -15,6 +19,7 @@ import sqlite3
 from typing import Any
 
 from . import db
+from . import execution as ex
 
 
 def start_equity() -> float:
@@ -49,7 +54,7 @@ def equity_now(conn: sqlite3.Connection, price: float) -> tuple[float, float, fl
         # long-only paper book
         unreal += p["size"] * (price - p["entry_price"])
         pos_value += p["size"] * price
-    equity = start_equity() + realised + unreal
+    equity = start_equity() + realised + unreal + ex.accrued_interest(conn)
     cash = equity - pos_value
     return equity, cash, pos_value
 
@@ -66,7 +71,8 @@ def fill(
     fresh position starts at ~0 unrealised); defaults to the proposed price.
     `spy` snapshots the benchmark at fill time for the shadow-SPY comparison.
     """
-    entry_price = pending["price"] if price is None else price
+    quote = pending["price"] if price is None else price
+    entry_price = quote * (1.0 + ex.cost_rate())   # buys fill above the quote (spread + slippage)
     cur = conn.execute(
         "INSERT INTO trades(symbol, side, entry_ts, entry_price, size, "
         "stop_price, target_price, strategy_version, status, context, spy_entry) "
@@ -97,14 +103,16 @@ def close_position(
     """Close an open long position at `price` and record realised PnL.
 
     `spy` snapshots the benchmark at close time, ending the trade's shadow-SPY
-    window (see hermes_trading.spy_compare)."""
-    pnl = trade["size"] * (price - trade["entry_price"])
-    cost = trade["size"] * trade["entry_price"]
-    pnl_pct = (pnl / cost) if cost else 0.0
+    window (see hermes_trading.spy_compare). The recorded exit price is net of the
+    per-side trading cost, so pnl is what the round trip actually kept."""
+    fill_px = price * (1.0 - ex.cost_rate())        # sells fill below the quote
+    pnl = trade["size"] * (fill_px - trade["entry_price"])
+    cost_basis = trade["size"] * trade["entry_price"]
+    pnl_pct = (pnl / cost_basis) if cost_basis else 0.0
     conn.execute(
         "UPDATE trades SET status='closed', exit_ts=?, exit_price=?, "
         "exit_reason=?, pnl=?, pnl_pct=?, spy_exit=? WHERE id=?",
-        (db.now(), price, reason, pnl, pnl_pct, spy, trade["id"]),
+        (db.now(), fill_px, reason, pnl, pnl_pct, spy, trade["id"]),
     )
 
 
@@ -239,7 +247,7 @@ def equity_now_multi(
         px = prices.get(p["symbol"], p["entry_price"])
         unreal += p["size"] * (px - p["entry_price"])
         pos_value += p["size"] * px
-    equity = start_equity() + realised + unreal
+    equity = start_equity() + realised + unreal + ex.accrued_interest(conn)
     return equity, equity - pos_value, pos_value
 
 

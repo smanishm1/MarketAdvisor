@@ -60,7 +60,8 @@ def strategy_lineage(conn: sqlite3.Connection, limit: int = 12) -> list[dict[str
     """Applied AND rejected strategy changes, oldest first — the version history."""
     rows = conn.execute(
         "SELECT proposed_ts, resolved_ts, source, from_version, to_version, "
-        "variable, old_value, new_value, rationale, status FROM pending_strategy "
+        "variable, old_value, new_value, rationale, status, decision_reason, decided_via "
+        "FROM pending_strategy "
         "WHERE status IN ('applied','rejected') ORDER BY proposed_ts DESC LIMIT ?",
         (limit,),
     ).fetchall()

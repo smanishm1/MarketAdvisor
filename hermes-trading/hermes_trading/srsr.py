@@ -12,15 +12,27 @@ from dataclasses import dataclass, field
 from typing import Any
 
 
-def momentum_score(closes: Sequence[float], lookbacks_days: Sequence[int]) -> float | None:
-    """Average total return over each lookback (e.g. 63 & 126 trading days)."""
+def momentum_score(
+    closes: Sequence[float],
+    lookbacks_days: Sequence[int],
+    weights: Sequence[float] | None = None,
+) -> float | None:
+    """Weighted blend of total returns over each lookback (e.g. 21, 63 & 126 days).
+
+    With no `weights` this is the plain average (the original behaviour). A NEGATIVE
+    weight uses that horizon in the opposite direction — e.g. a -1 on the 1-month
+    return penalises names that just spiked (short-term reversal). Normalised by
+    the sum of |weights| so scores stay on a comparable scale.
+    """
     n = len(closes)
-    rets: list[float] = []
-    for lb in lookbacks_days:
+    ws = list(weights) if weights is not None else [1.0] * len(lookbacks_days)
+    num = den = 0.0
+    for lb, w in zip(lookbacks_days, ws):
         if n <= lb or closes[-1 - lb] == 0:
             return None
-        rets.append(closes[-1] / closes[-1 - lb] - 1.0)
-    return sum(rets) / len(rets) if rets else None
+        num += float(w) * (closes[-1] / closes[-1 - lb] - 1.0)
+        den += abs(float(w))
+    return num / den if den else None
 
 
 def sma(closes: Sequence[float], n: int) -> float | None:
@@ -115,14 +127,16 @@ def pick_targets(
 def evaluate(prices: dict[str, Sequence[float]], benchmark: Sequence[float], cfg: dict[str, Any]) -> Decision:
     """Rank the universe and apply the dual-momentum filters at the latest bar."""
     lookbacks = cfg.get("momentum_lookbacks_days", [63, 126])
+    weights = cfg.get("momentum_weights")   # None -> equal (plain average)
     sma_n = int(cfg.get("trend_sma_days", 200))
 
-    bench_score = momentum_score(benchmark, lookbacks)
+    # the benchmark is scored with the SAME blend, so "beats the market" stays apples-to-apples
+    bench_score = momentum_score(benchmark, lookbacks, weights)
 
     scores: dict[str, float] = {}
     eligible: list[str] = []
     for sym, closes in prices.items():
-        ms = momentum_score(closes, lookbacks)
+        ms = momentum_score(closes, lookbacks, weights)
         if ms is None:
             continue
         scores[sym] = ms
