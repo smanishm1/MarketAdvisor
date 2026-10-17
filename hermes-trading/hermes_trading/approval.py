@@ -65,6 +65,21 @@ def list_approved_unfilled(conn: sqlite3.Connection) -> list[dict[str, Any]]:
     return db.rows_to_dicts(rows)
 
 
+def expire_stale_trades(conn: sqlite3.Connection, max_age_hours: float) -> list[dict[str, Any]]:
+    """Mark proposals older than `max_age_hours` as 'expired' (pending OR approved-but-unfilled).
+
+    A proposal is a snapshot of one day's signal. Days later it may describe a trade the
+    strategy would no longer make, so it is dropped and the next rebalance proposes afresh."""
+    cutoff = db.now() - float(max_age_hours) * 3600.0
+    rows = db.rows_to_dicts(conn.execute(
+        "SELECT * FROM pending_trades WHERE status IN ('pending','approved') AND proposed_ts < ?",
+        (cutoff,),
+    ).fetchall())
+    for r in rows:
+        set_trade_status(conn, r["id"], "expired")
+    return rows
+
+
 def set_trade_status(conn: sqlite3.Connection, pending_id: int, status: str) -> None:
     conn.execute(
         "UPDATE pending_trades SET status=?, resolved_ts=? WHERE id=?",

@@ -221,6 +221,8 @@ def clear_risk_off() -> dict[str, bool]:
     try:
         db.set_meta(conn, "risk_off", "0")
         db.set_meta(conn, "risk_off_reason", "")
+        # restart the drawdown clock, otherwise a drawdown trigger just re-fires on the next tick
+        db.set_meta(conn, "peak_reset_ts", str(db.now()))
         conn.commit()
         return {"risk_off": False}
     finally:
