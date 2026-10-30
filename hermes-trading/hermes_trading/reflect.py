@@ -330,8 +330,11 @@ def propose_hermes(strat, goal, trades, scored, mem=None) -> tuple[str, Any, str
 
 # ---- driver ----------------------------------------------------------------
 
-# Below this many closed trades, reflection holds — too small a sample to judge.
-MIN_SAMPLE_TRADES = 0
+# Below this many closed trades, reflection holds — too small a sample to judge. Override with
+# `min_sample_trades:` in goal.yaml (0 switches the check off). It was 0 here by default, which
+# silently disabled the check even though the comment, seed_demo.py and the docs say 5.
+# Note even 5 is a tiny sample for a once-a-week strategy; see docs/REFLECTION-GUARD.md.
+MIN_SAMPLE_TRADES = 5
 
 
 def _record_hold(conn, source: str, scored: dict, rationale: str, announce: bool) -> dict:
@@ -367,10 +370,11 @@ def propose_once(mode: str, *, announce: bool = False) -> dict | None:
         source = "hermes" if mode == "hermes" else "fallback"
 
         # too small a sample to judge -> hold (never tweak on noise)
-        if len(trades) < MIN_SAMPLE_TRADES:
+        min_trades = int(goal.get("min_sample_trades", MIN_SAMPLE_TRADES) or 0)
+        if len(trades) < min_trades:
             return _record_hold(
                 conn, source, scored,
-                f"only {len(trades)} closed trade(s) — too few to judge; holding.",
+                f"only {len(trades)} closed trade(s) — too few to judge (need {min_trades}); holding.",
                 announce,
             )
 

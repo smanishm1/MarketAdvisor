@@ -9,6 +9,7 @@ min_sharpe:        1.0       # quality bar
 failure_below:    -0.10      # score floor — steeply negative below this realised return
 reflection_every:  8         # reflect every N closed trades (raised from 5 — slower strategy)
 one_variable_only: true      # scientific-method guardrail
+min_sample_trades: 5         # reflection holds until this many trades have closed (0 = no minimum)
 
 # Black-swan circuit breaker: a portfolio-level brake for severe market shocks.
 # (Honest limit: with daily data it reacts on the next daily close — it cushions
