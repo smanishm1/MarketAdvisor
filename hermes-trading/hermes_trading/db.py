@@ -24,7 +24,7 @@ CREATE TABLE IF NOT EXISTS pending_trades (
     target_price    REAL NOT NULL,
     size            REAL NOT NULL,
     strategy_version TEXT NOT NULL,
-    status          TEXT NOT NULL DEFAULT 'pending',  -- pending|approved|rejected|filled
+    status          TEXT NOT NULL DEFAULT 'pending',  -- pending|approved|rejected|filled|expired
     resolved_ts     REAL
 );
 

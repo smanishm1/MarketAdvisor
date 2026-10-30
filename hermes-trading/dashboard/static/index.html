@@ -317,7 +317,7 @@ function renderPendingTrades(items){
       <div class="queue-head">
         <div><b>${t.symbol}</b> ${t.side} · ${Number(t.size).toFixed(6)} @ ${money(t.price)}
           <span class="muted">· RSI ${t.rsi==null?"—":Number(t.rsi).toFixed(1)}
-          · stop ${money(t.stop_price)} · target ${money(t.target_price)} · v${t.strategy_version}
+          · stop ${money(t.stop_price)} · target ${(t.target_price && t.target_price < t.price*50) ? money(t.target_price) : "none (exits by rule)"} · v${t.strategy_version}
           · proposed ${fmtTs(t.proposed_ts)}</span></div>
         <div class="queue-actions">
           <button class="approve" onclick="post('/api/trades/${t.id}/approve')">Approve</button>

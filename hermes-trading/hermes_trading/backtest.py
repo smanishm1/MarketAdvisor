@@ -471,6 +471,7 @@ def simulate(cfg: dict[str, Any], close, start_date=None, end_date=None,
                         sell(sym, px)
                         flattened += 1
                     equity = cash
+                    peak = equity   # drawdown is measured from the flatten on (matches loop.py)
                 n_brake_flattened += flattened
                 brake_log.append({"date": str(d.date()), "event": "risk_off",
                                   "reason": reason, "positions_flattened": flattened})

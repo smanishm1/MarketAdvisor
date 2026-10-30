@@ -91,6 +91,34 @@ def reconcile_strategy(conn: sqlite3.Connection) -> None:
         )
 
 
+PENDING_MAX_AGE_HOURS = 72.0      # Friday proposal can still be approved on Monday
+PENDING_MAX_DRIFT_PCT = 0.05      # cancel an approval if the price moved >5% since the proposal
+
+
+def _fill_blocker(conn: sqlite3.Connection, pend: dict, live: float | None, goal: dict) -> str | None:
+    """Re-check a BUY at the moment it would fill. Returns the reason to cancel, or None.
+
+    Approval can come hours or days after the proposal; the world may have changed. We do not
+    re-run the whole signal here, only the cheap checks that matter most: the safety brakes,
+    the price, and whether the cash is still there."""
+    if str(pend.get("side", "long")).lower() not in ("long", "buy"):
+        return None
+    if db.get_meta(conn, "risk_off", "0") == "1":
+        return "risk-off is on, so no new buys"
+    if db.get_meta(conn, "buys_halted", "0") == "1":
+        return "early-warning brake is on, so new buys are paused"
+    proposed = float(pend["price"])
+    max_drift = float(goal.get("pending_trade_max_drift_pct", PENDING_MAX_DRIFT_PCT))
+    if live and live > 0 and proposed > 0 and abs(live / proposed - 1.0) > max_drift:
+        return f"price moved {live / proposed - 1.0:+.1%} since the proposal (limit {max_drift:.0%})"
+    _, cash, _ = paper_broker.equity_now_multi(conn, {})
+    px = live if live and live > 0 else proposed
+    need = px * float(pend["size"]) * (1.0 + ex.cost_rate())
+    if need > cash + 1e-6:
+        return f"not enough cash (needs ${need:,.0f}, has ${cash:,.0f})"
+    return None
+
+
 async def reconcile_trades(conn: sqlite3.Connection, quote, spy_quote=None) -> None:
     """Fill any human-approved trade proposal at the LIVE price at approval time.
 
@@ -105,6 +133,11 @@ async def reconcile_trades(conn: sqlite3.Connection, quote, spy_quote=None) -> N
     `spy_quote` (async, optional) snapshots the benchmark once per fill batch so
     each trade's shadow-SPY window starts at the same moment as the fill.
     """
+    goal = load_goal()
+    max_age = float(goal.get("pending_trade_max_age_hours", PENDING_MAX_AGE_HOURS))
+    for old in approval.expire_stale_trades(conn, max_age):
+        console.log(f"[yellow]expired[/] stale proposal #{old['id']} {old['symbol']} (older than {max_age:g}h)")
+
     pends = approval.list_approved_unfilled(conn)
     if not pends:
         return
@@ -122,6 +155,12 @@ async def reconcile_trades(conn: sqlite3.Connection, quote, spy_quote=None) -> N
             live = await quote(pend["symbol"])
         except Exception:  # noqa: BLE001 — re-pricing is best-effort
             live = None
+
+        why = _fill_blocker(conn, pend, live, goal)
+        if why:
+            approval.set_trade_status(conn, pend["id"], "expired")
+            console.log(f"[yellow]not filled[/] #{pend['id']} {pend['symbol']}: {why}")
+            continue
 
         if live and live > 0 and proposed > 0:
             ratio = live / proposed
@@ -377,9 +416,16 @@ def _black_swan_guard(
         spy_ret = bench[-1] / bench[-2] - 1.0           # daily close-to-close fallback
     else:
         spy_ret = 0.0
-    row = conn.execute("SELECT MAX(equity) AS m FROM equity").fetchone()
-    peak = row["m"] if row and row["m"] else paper_broker.start_equity()
+    # The high-water mark restarts after a flatten (meta `peak_reset_ts`). Without this, a 20%
+    # drawdown measured from a peak we no longer hold can never clear while we sit in cash,
+    # and the brake re-fires within days of every re-entry. See docs/BRAKE-FIX.md.
+    reset_ts = float(db.get_meta(conn, "peak_reset_ts", "0") or "0")
+    row = conn.execute("SELECT MAX(equity) AS m FROM equity WHERE ts >= ?", (reset_ts,)).fetchone()
     equity_now, _, _ = paper_broker.equity_now_multi(conn, last)
+    if row and row["m"]:
+        peak = max(row["m"], equity_now) if reset_ts else row["m"]
+    else:
+        peak = equity_now if reset_ts else paper_broker.start_equity()
     dd = (peak - equity_now) / peak if peak else 0.0
 
     reason = None
@@ -401,6 +447,7 @@ def _black_swan_guard(
                 )
                 if tid:
                     console.log(f"[red]flattened #{tid} {sym} -> cash[/]")
+            db.set_meta(conn, "peak_reset_ts", str(db.now()))   # drawdown is measured from here on
         conn.commit()
         return True
 
