@@ -177,6 +177,9 @@ fool yourself):
 
 ## Safety
 
+See [docs/SECURITY-FIXES.md](docs/SECURITY-FIXES.md) for the October 2026 security review: what was
+checked, what was fixed, and why.
+
 - Paper mode only. `.env` has `HERMES_TRADING_MODE=paper` and
   `HERMES_TRADING_I_ACCEPT_RISK=false`. There is **no live-order code path** in this repo —
   going live would require deliberately adding an execution adapter. Don't, yet.
@@ -186,5 +189,5 @@ fool yourself):
 ## Cost
 
 Local + paper: the only recurring cost is Claude API tokens during `reflect --hermes`
-(a few dollars/month). Market data is free via ccxt public endpoints. The worker and
-dashboard make zero API calls.
+(a few dollars/month). Market data and headlines are free via Yahoo Finance (yfinance) and the S&P 500 list comes
+from Wikipedia; none of that needs a key. The worker and dashboard make no paid API calls.

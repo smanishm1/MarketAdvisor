@@ -10,7 +10,10 @@ import json
 import threading
 from typing import Any
 
-from fastapi import FastAPI, HTTPException
+import os
+from urllib.parse import urlparse
+
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -24,6 +27,41 @@ from hermes_trading.reflect import propose_once
 from hermes_trading.score import score
 
 app = FastAPI(title="hermes-trading dashboard")
+
+# ---- local-only guard ------------------------------------------------------
+# The dashboard has no login, so it must only answer the browser tab you opened yourself.
+#  * Host check  -> blocks "DNS rebinding" (a web page re-pointing its own name at 127.0.0.1)
+#  * Origin check -> blocks other websites from sending Approve/Reject clicks to localhost
+# To reach it from another device on purpose, add names to HERMES_DASHBOARD_ALLOWED_HOSTS
+# (comma separated, e.g. "mypc,192.168.1.20").
+_LOCAL_HOSTS = {"localhost", "127.0.0.1", "[::1]", "::1", "testserver"}
+
+
+def _allowed_hosts() -> set[str]:
+    extra = {h.strip().lower() for h in os.environ.get("HERMES_DASHBOARD_ALLOWED_HOSTS", "").split(",") if h.strip()}
+    return _LOCAL_HOSTS | extra
+
+
+def _hostname(value: str) -> str:
+    """'localhost:8000' -> 'localhost';  '[::1]:8000' -> '[::1]'."""
+    value = value.strip().lower()
+    if value.startswith("["):
+        return value.split("]")[0] + "]"
+    return value.split(":")[0]
+
+
+@app.middleware("http")
+async def _local_only_guard(request: Request, call_next):
+    allowed = _allowed_hosts()
+    if _hostname(request.headers.get("host", "")) not in allowed:
+        return JSONResponse({"detail": "blocked: unexpected Host header"}, status_code=403)
+    origin = request.headers.get("origin")
+    if origin is not None and request.method not in ("GET", "HEAD", "OPTIONS"):
+        host = (urlparse(origin).hostname or "").lower()
+        host = f"[{host}]" if ":" in host else host
+        if host not in allowed:
+            return JSONResponse({"detail": "blocked: request came from another website"}, status_code=403)
+    return await call_next(request)
 
 # guards a manual "Reflect now" so double-clicks can't spawn two at once
 _reflect_lock = threading.Lock()

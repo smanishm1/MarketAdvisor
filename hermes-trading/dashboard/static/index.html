@@ -295,7 +295,7 @@ function tradeContextHtml(ctx){
   if(ctx.earnings) parts.push(`next earnings <b>${esc(ctx.earnings)}</b>`);
   parts.push(ctx.last_exit
     ? `last round-trip: <b class="${cls(ctx.last_exit.pnl_pct)}">${pct(ctx.last_exit.pnl_pct)}</b>`
-      + ` (${ctx.last_exit.exit_reason||"—"}, ${fmtTs(ctx.last_exit.exit_ts)})`
+      + ` (${esc(ctx.last_exit.exit_reason||"—")}, ${fmtTs(ctx.last_exit.exit_ts)})`
     : "first time holding this name");
   let html = `<div class="muted" style="margin-top:6px">${parts.join(" · ")}</div>`;
   const nws = ctx.news || [];
@@ -338,11 +338,11 @@ function renderBrief(b, briefing){
     box.innerHTML = '<div class="queue-item empty">No brief yet — one is generated each morning while the worker runs, or click Brief now.</div>';
     return;
   }
-  box.innerHTML = `<div style="font-size:14px"><b>${b.headline||""}</b></div>`
+  box.innerHTML = `<div style="font-size:14px"><b>${esc(b.headline||"")}</b></div>`
     + '<div class="brief-grid">'
     + (b.sections||[]).map(s =>
-        `<div class="brief-sec"><div class="brief-title">${s.title}</div>`
-        + (s.lines||[]).map(l=>`<div class="brief-line">${l}</div>`).join("")
+        `<div class="brief-sec"><div class="brief-title">${esc(s.title)}</div>`
+        + (s.lines||[]).map(l=>`<div class="brief-line">${esc(l)}</div>`).join("")
         + `</div>`).join("")
     + '</div>';
 }
@@ -381,7 +381,7 @@ function renderSpyCompare(sc){
       <table style="margin-top:6px"><thead><tr>
       <th>closed trade</th><th>reason</th><th>pnl %</th><th>SPY same window</th><th>vs SPY</th></tr></thead><tbody>`
       + closedRows.map(r=>`<tr><td>${r.symbol} <span class="muted">${fmtTs(r.exit_ts)}</span></td>
-        <td class="muted">${r.exit_reason||""}</td>
+        <td class="muted">${esc(r.exit_reason||"")}</td>
         <td class="${cls(r.pnl_pct)}">${P(r.pnl_pct)}</td>
         <td class="${cls(r.spy_pct)}">${P(r.spy_pct)}</td>
         <td class="${cls(r.alpha_pct)}"><b>${(r.alpha_pct>=0?"+":"")+(r.alpha_pct*100).toFixed(2)} pp</b></td></tr>`).join("")
@@ -416,7 +416,7 @@ function renderJournal(m){
   html += refl.length
     ? refl.map(r=>`<div class="brief-line"><span class="pill" style="background:#21262d">${r.source||""}</span>
         ${r.decision==="hold" ? "held" : `proposed <code>${r.variable}</code>`}
-        <span class="muted">${r.rationale||""}</span></div>`).join("")
+        <span class="muted">${esc(r.rationale||"")}</span></div>`).join("")
     : '<div class="muted">no reflections yet</div>';
   box.innerHTML = html;
 }
@@ -619,7 +619,7 @@ function renderClosed(rows){
   b.innerHTML = rows.length ? rows.map(t => `
     <tr><td>${t.symbol}</td><td class="muted">${fmtTs(t.entry_ts)}</td><td class="muted">${fmtTs(t.exit_ts)}</td>
     <td>${money(t.entry_price)}</td><td>${money(t.exit_price)}</td>
-    <td class="muted">${t.exit_reason||""}</td>
+    <td class="muted">${esc(t.exit_reason||"")}</td>
     <td class="${cls(t.pnl)}">${money(t.pnl)}</td>
     <td class="${cls(t.pnl)}">${pct(t.pnl_pct)}</td><td class="muted">v${t.strategy_version}</td></tr>`).join("")
     : '<tr><td colspan="9" class="muted">none yet</td></tr>';
@@ -745,7 +745,7 @@ async function refresh(){
     const r = d.reflection, autoOn = d.settings && d.settings.auto_reflect;
     const next = r.remaining<=0 ? "due now" : `next in ${r.remaining} trade${r.remaining===1?"":"s"}`;
     let txt = `Reflection: every ${r.every} closed trades · ${r.since_last}/${r.every} since last · ${autoOn ? next : "auto-reflect off"}`;
-    if(r.last_note) txt += ` · last: ${r.last_note}`;
+    if(r.last_note) txt += ` · last: ${esc(r.last_note)}`;
     $("reflInfo").textContent = txt;
 
     // toast the outcome of a manual "Reflect now" once a fresh result lands

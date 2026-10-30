@@ -24,12 +24,13 @@ import urllib.request
 
 from hermes_trading.paths import load_env
 
-MODEL = os.environ.get("CLAUDE_BRAIN_MODEL", "claude-sonnet-4-6")
+DEFAULT_MODEL = "claude-sonnet-4-6"   # override with CLAUDE_BRAIN_MODEL in .env
 SYSTEM = "You are the reflection brain of a paper-trading agent. Respond with ONLY a single JSON object, no prose."
 
 
 def main() -> int:
-    load_env()  # pull ANTHROPIC_API_KEY from .env if not already in the environment
+    load_env()  # pull ANTHROPIC_API_KEY (and CLAUDE_BRAIN_MODEL) from .env
+    model = os.environ.get("CLAUDE_BRAIN_MODEL", DEFAULT_MODEL)  # read AFTER load_env
     key = os.environ.get("ANTHROPIC_API_KEY")
     if not key:
         print("ERROR: ANTHROPIC_API_KEY not set (.env)", file=sys.stderr)
@@ -38,7 +39,7 @@ def main() -> int:
     prompt = sys.argv[1] if len(sys.argv) > 1 else sys.stdin.read()
 
     body = json.dumps({
-        "model": MODEL,
+        "model": model,
         "max_tokens": 400,
         "system": SYSTEM,
         "messages": [{"role": "user", "content": prompt}],
