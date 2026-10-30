@@ -12,6 +12,13 @@ ratio on returns in excess of the T-bill rate. Pass ``exec_cfg=execution.gross()
 
     python -m hermes_trading.backtest --years 20
     python -m hermes_trading.backtest --gross
+    python -m hermes_trading.backtest --live-like        # mirror the live worker's timing + brakes
+    python -m hermes_trading.backtest --compare-modes    # original vs live-like, one change at a time
+
+By default the timing is the ORIGINAL backtest model (so old numbers stay comparable): rebalance on
+the first bar of the week, exits only at the rebalance, trades filled at the same close the signal
+was computed on, no safety brakes. The live app does none of those four things. See
+docs/BACKTEST-PARITY.md.
 
 Honest health warning: tuning dials until this looks great is curve-fitting. Prefer
 robust round numbers, out-of-sample checks, and the per-regime table (a strategy
@@ -31,7 +38,7 @@ from rich.table import Table
 from . import execution as ex
 from . import paper_broker, srsr
 from .adapters import equities
-from .config import load_strategy, load_strategy_file
+from .config import load_goal, load_strategy, load_strategy_file
 from .paper_broker import start_equity
 from .paths import PRESETS_DIR
 
@@ -116,9 +123,32 @@ def regime_table(result: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def run_backtest(cfg: dict[str, Any], years: int = DEFAULT_YEARS,
-                 exec_cfg: dict[str, Any] | None = None) -> dict[str, Any]:
+                 exec_cfg: dict[str, Any] | None = None, **sim_opts: Any) -> dict[str, Any]:
+    """Load history and simulate. `sim_opts` = timing options (see ``simulate`` / ``live_like_options``)."""
     close = _load_history(list(cfg.get("universe", [])) + [cfg.get("benchmark", "SPY")], years)
-    return simulate(cfg, close, exec_cfg=exec_cfg)
+    return simulate(cfg, close, exec_cfg=exec_cfg, **sim_opts)
+
+
+def compare_modes(cfg: dict[str, Any], years: int = DEFAULT_YEARS,
+                  exec_cfg: dict[str, Any] | None = None, progress=None) -> list[tuple[str, dict[str, Any]]]:
+    """Same strategy, same data, run under the original timing, then each live-app difference
+    ON ITS OWN, then all four together — so you can see which difference actually matters."""
+    close = _load_history(list(cfg.get("universe", [])) + [cfg.get("benchmark", "SPY")], years)
+    live = live_like_options()
+    variants: list[tuple[str, dict[str, Any]]] = [
+        ("original timing", {}),
+        ("Friday rebalance only", {"rebalance_day": "friday"}),
+        ("daily exits only", {"fast_exits": True}),
+        ("fill next bar only", {"lag": 1}),
+        ("safety brakes only", {"brakes": live["brakes"]}),
+        ("all four (live-like)", live),
+    ]
+    out = []
+    for label, opts in variants:
+        if progress:
+            progress(label)
+        out.append((label, simulate(cfg, close, exec_cfg=exec_cfg, **opts)))
+    return out
 
 
 def compare(
@@ -167,17 +197,84 @@ def compare(
     return out
 
 
+REBALANCE_DAYS = ("monday", "friday")
+
+
+def rebalance_bars(dates, begin: int, stop: int, rebalance_day: str = "monday") -> set[int]:
+    """Indices of the bars on which the weekly rebalance happens.
+
+    "monday" (the original backtest behaviour): the first trading bar of each ISO week.
+    "friday": the last trading bar of each ISO week, which is what the live app's Friday
+    rebalance does. In both modes the very first bar counts too (the live worker also
+    rebalances on its first run).
+    """
+    if rebalance_day not in REBALANCE_DAYS:
+        raise ValueError(f"rebalance_day must be one of {REBALANCE_DAYS}, got {rebalance_day!r}")
+    wks = [d.isocalendar()[:2] for d in dates]
+    bars: set[int] = set()
+    for i in range(begin, stop):
+        if i == begin:
+            bars.add(i)
+        elif rebalance_day == "monday":
+            if wks[i] != wks[i - 1]:
+                bars.add(i)
+        elif i + 1 < len(dates) and wks[i + 1] != wks[i]:
+            bars.add(i)
+    return bars
+
+
+def brakes_from_goal(goal: dict[str, Any] | None = None) -> dict[str, Any]:
+    """The live worker's safety-brake thresholds (goal.yaml `black_swan:`), same defaults."""
+    if goal is None:
+        goal = load_goal()
+    bs = goal.get("black_swan", {}) or {}
+    return {
+        "early_warn_day_pct": float(bs.get("early_warn_day_pct", -0.05)),
+        "crash_day_pct": float(bs.get("crash_day_pct", -0.07)),
+        "max_portfolio_drawdown_pct": float(bs.get("max_portfolio_drawdown_pct", 0.20)),
+        "flatten_on_trigger": bool(bs.get("flatten_on_trigger", True)),
+    }
+
+
+def live_like_options(goal: dict[str, Any] | None = None) -> dict[str, Any]:
+    """simulate() options that make the backtest behave like the live worker:
+    Friday rebalance, exits checked daily, trades filled one bar after the decision, and
+    the crash / drawdown / early-warning brakes switched on."""
+    return {"rebalance_day": "friday", "lag": 1, "fast_exits": True,
+            "brakes": brakes_from_goal(goal)}
+
+
 def simulate(cfg: dict[str, Any], close, start_date=None, end_date=None,
              fast_exits: bool = False, fast_buys: bool = False,
-             exec_cfg: dict[str, Any] | None = None) -> dict[str, Any]:
+             exec_cfg: dict[str, Any] | None = None,
+             rebalance_day: str = "monday", lag: int = 0,
+             brakes: dict[str, Any] | None = None) -> dict[str, Any]:
     """Backtest cfg over close. `start_date`/`end_date` window the *recorded* portfolio
     (bars before start_date are still used for indicator warmup) — used for train/test splits.
-    `fast_exits` checks rotation exits daily; `fast_buys` opens new positions daily. Default
-    is "exit fast (daily), add slow (weekly)". `exec_cfg` sets the frictions (defaults to
-    goal.yaml's `execution:` block; ``execution.gross()`` = the old frictionless model).
+    `exec_cfg` sets the frictions (defaults to goal.yaml's `execution:` block;
+    ``execution.gross()`` = the old frictionless model).
+
+    Timing options. The defaults reproduce the ORIGINAL backtest exactly (so old numbers stay
+    comparable); ``live_like_options()`` gives the settings that mirror the live worker.
+      fast_exits     check rotation exits every bar (live default: on). Default here: off, so
+                     exits happen only at the weekly rebalance.
+      fast_buys      open new positions every bar instead of weekly.
+      rebalance_day  "monday" = first bar of the week (original); "friday" = last bar of the week.
+      lag            bars between a decision and its fill. 0 = decide and trade at the same
+                     closing price (original, slightly optimistic); 1 = trade at the next
+                     bar's close, like the live app where you approve after the signal.
+      brakes         None = off (original). A dict (see ``brakes_from_goal``) turns on the live
+                     app's safety brakes: SPY day <= crash_day_pct or equity drawdown >=
+                     max_portfolio_drawdown_pct flattens to cash and stops buying until SPY is
+                     back above its 200-day average (a drawdown trigger also needs the drawdown
+                     to heal); SPY day <= early_warn_day_pct pauses new buys for that day.
+                     Daily bars only, so it reacts at the close, not intraday.
     """
     exec_cfg = ex.settings() if exec_cfg is None else exec_cfg
     cost = ex.cost_rate(exec_cfg)
+    if lag < 0 or int(lag) != lag:
+        raise ValueError(f"lag must be a whole number of bars >= 0, got {lag!r}")
+    lag = int(lag)
     universe = list(cfg.get("universe", []))
     benchmark = cfg.get("benchmark", "SPY")
     max_pos = int(cfg.get("max_positions", 3))
@@ -211,9 +308,11 @@ def simulate(cfg: dict[str, Any], close, start_date=None, end_date=None,
     stop = len(dates)
     if end_date is not None:
         stop = min(stop, int(dates.searchsorted(pd.Timestamp(end_date))))
+    rebal_bars = rebalance_bars(dates, begin, stop, rebalance_day)
 
     e0 = start_equity()
     cash = e0
+    equity = e0
     positions: dict[str, dict[str, float]] = {}   # sym -> {shares, stop}
     curve_dates: list[Any] = []
     curve_equity: list[float] = []
@@ -227,7 +326,18 @@ def simulate(cfg: dict[str, Any], close, start_date=None, end_date=None,
     n_held: list[int] = []        # positions held at each close
     eff_n: list[float] = []       # effective number of holdings, 1/sum(w^2), when invested
     top_w: list[float] = []       # largest position as a share of equity, when invested
-    prev_week: tuple[int, int] | None = None
+    pending: list[tuple[int, dict[str, Any]]] = []   # (bar to fill on, orders) when lag > 0
+
+    # safety brakes (only when `brakes` is given)
+    spy_close = close[benchmark] if benchmark in close.columns else None
+    spy_sma200 = spy_close.rolling(200).mean() if spy_close is not None else None
+    risk_off = False
+    buys_paused = False
+    peak = e0
+    brake_log: list[dict[str, Any]] = []
+    n_brake_flattened = 0
+    days_risk_off = 0
+    days_buys_paused = 0
 
     def sell(sym: str, px: float) -> None:
         nonlocal cash, costs_paid, traded
@@ -236,6 +346,73 @@ def simulate(cfg: dict[str, Any], close, start_date=None, end_date=None,
         costs_paid += gross_value * cost
         traded += gross_value
         del positions[sym]
+
+    def execute(o: dict[str, Any], row) -> None:
+        """Carry out one decision's orders (exits, trims, buys) at THIS bar's prices."""
+        nonlocal cash, equity, costs_paid, traded, n_trims, n_trades
+        if o["do_exit"]:
+            for sym, _reason in o["sells"]:
+                px = row.get(sym)
+                if px is None or pd.isna(px) or sym not in positions:
+                    continue
+                sell(sym, px)
+
+        if trim and o["rebalance"]:
+            eq_now = cash + sum(
+                positions[s]["shares"] * row[s] for s in positions if not pd.isna(row.get(s))
+            )
+            for sym in list(positions):
+                px = row.get(sym)
+                if px is None or pd.isna(px) or eq_now <= 0:
+                    continue
+                val = positions[sym]["shares"] * px
+                cap_w = trim_cap(sym)
+                if val / eq_now > cap_w + trim_band:
+                    gross_value = val - cap_w * eq_now          # sell the excess back to the cap
+                    positions[sym]["shares"] -= gross_value / px
+                    cash += gross_value * (1.0 - cost)
+                    costs_paid += gross_value * cost
+                    traded += gross_value
+                    n_trims += 1
+
+        if o["do_buy"]:
+            equity = cash + sum(
+                positions[s]["shares"] * row[s] for s in positions if not pd.isna(row.get(s))
+            )
+            prices = o["prices"]
+            # weight new buys within the intended basket (keeps + buys)
+            basket = list(positions) + [s for s in o["buys"] if s not in positions]
+            vols = (
+                {s: v for s in basket
+                 if (v := srsr.volatility(prices.get(s, []), vol_lb)) is not None}
+                if sizing == "inverse_vol" else None
+            )
+            weights = paper_broker.sizing_weights(
+                sizing, basket, scores=o["scores"], vols=vols, rank_power=rank_power
+            )
+            for sym in o["buys"]:
+                if len(positions) >= max_pos or sym in positions:
+                    continue
+                px = row.get(sym)
+                if px is None or pd.isna(px) or px <= 0:
+                    continue
+                px_fill = px * (1.0 + cost)     # buys fill above the quote
+                shares = paper_broker.weighted_size(
+                    sizing, weights, sym, equity, px_fill, max_pos,
+                    srsr.cap_pct(cfg, sym),   # per-symbol: tighter for single stocks
+                )
+                shares = min(shares, cash / px_fill)  # never go negative
+                if shares <= 0:
+                    continue
+                cash -= shares * px_fill
+                costs_paid += shares * px * cost
+                traded += shares * px
+                positions[sym] = {
+                    "shares": shares,
+                    "stop": px * (1 - srsr.stop_pct(cfg, sym) / 100.0),
+                    "peak": px,
+                }
+                n_trades += 1
 
     for i in range(begin, stop):
         d = dates[i]
@@ -267,79 +444,81 @@ def simulate(cfg: dict[str, Any], close, start_date=None, end_date=None,
         )
         equity = cash + held_value
 
-        # 3. decisions — exits weekly OR daily (fast_exits); buys weekly OR daily (fast_buys)
-        wk = d.isocalendar()[:2]
-        is_rebalance = (wk != prev_week)
-        prev_week = wk
+        # 2b. safety brakes (the live worker's black-swan guard), on the daily close
+        if brakes is not None and spy_close is not None and i > 0:
+            spy_now, spy_prev = float(spy_close.iloc[i]), float(spy_close.iloc[i - 1])
+            spy_ret = (spy_now / spy_prev - 1.0) if spy_prev and not np.isnan(spy_prev) else 0.0
+            peak = max(peak, equity)
+            dd = (peak - equity) / peak if peak else 0.0
+            crash_lim = float(brakes.get("crash_day_pct", -0.07))
+            dd_lim = float(brakes.get("max_portfolio_drawdown_pct", 0.20))
+            early_lim = float(brakes.get("early_warn_day_pct", -0.05))
+            reason = None
+            if spy_ret <= crash_lim:
+                reason = f"SPY {spy_ret:+.1%} in a day"
+            elif dd >= dd_lim:
+                reason = f"portfolio drawdown {dd:.1%}"
+            triggered = False
+            if reason and not risk_off:
+                risk_off = True
+                triggered = True
+                flattened = 0
+                if brakes.get("flatten_on_trigger", True):
+                    for sym in list(positions):
+                        px = row.get(sym)
+                        if px is None or pd.isna(px):
+                            continue
+                        sell(sym, px)
+                        flattened += 1
+                    equity = cash
+                n_brake_flattened += flattened
+                brake_log.append({"date": str(d.date()), "event": "risk_off",
+                                  "reason": reason, "positions_flattened": flattened})
+            elif risk_off and not reason:
+                sma200 = spy_sma200.iloc[i]
+                if not np.isnan(sma200) and spy_now > sma200:
+                    risk_off = False
+                    brake_log.append({"date": str(d.date()), "event": "risk_off_cleared",
+                                      "reason": "SPY back above its 200-day average"})
+            if not triggered:
+                if not risk_off and spy_ret <= early_lim:
+                    if not buys_paused:
+                        brake_log.append({"date": str(d.date()), "event": "buys_paused",
+                                          "reason": f"SPY {spy_ret:+.1%} today"})
+                    buys_paused = True
+                elif buys_paused:
+                    buys_paused = False
+                    brake_log.append({"date": str(d.date()), "event": "buys_resumed",
+                                      "reason": "SPY recovered above the warning level"})
+            days_risk_off += int(risk_off)
+            days_buys_paused += int(buys_paused)
+
+        # 3a. fill any orders decided `lag` bars ago, at today's prices
+        if pending:
+            due = [o for (fill_bar, o) in pending if fill_bar == i]
+            pending = [(fill_bar, o) for (fill_bar, o) in pending if fill_bar > i]
+            for o in due:
+                execute(o, row)
+
+        # 3b. decisions — exits weekly OR daily (fast_exits); buys weekly OR daily (fast_buys)
+        is_rebalance = i in rebal_bars
         if is_rebalance or fast_exits or fast_buys:
             hist = close.iloc[: i + 1]
             prices = {s: hist[s].dropna().tolist() for s in universe}
             bench = hist[benchmark].dropna().tolist()
             decision = srsr.evaluate(prices, bench, cfg)
             buys, sells = srsr.actions(decision, list(positions), cfg)
-
-            if is_rebalance or fast_exits:
-                for sym, _reason in sells:
-                    px = row.get(sym)
-                    if px is None or pd.isna(px):
-                        continue
-                    sell(sym, px)
-
-            if trim and is_rebalance:
-                eq_now = cash + sum(
-                    positions[s]["shares"] * row[s] for s in positions if not pd.isna(row.get(s))
-                )
-                for sym in list(positions):
-                    px = row.get(sym)
-                    if px is None or pd.isna(px) or eq_now <= 0:
-                        continue
-                    val = positions[sym]["shares"] * px
-                    cap_w = trim_cap(sym)
-                    if val / eq_now > cap_w + trim_band:
-                        gross_value = val - cap_w * eq_now          # sell the excess back to the cap
-                        positions[sym]["shares"] -= gross_value / px
-                        cash += gross_value * (1.0 - cost)
-                        costs_paid += gross_value * cost
-                        traded += gross_value
-                        n_trims += 1
-
-            if is_rebalance or fast_buys:
-                equity = cash + sum(
-                    positions[s]["shares"] * row[s] for s in positions if not pd.isna(row.get(s))
-                )
-                # weight new buys within the intended basket (keeps + buys)
-                basket = list(positions) + [s for s in buys if s not in positions]
-                vols = (
-                    {s: v for s in basket
-                     if (v := srsr.volatility(prices.get(s, []), vol_lb)) is not None}
-                    if sizing == "inverse_vol" else None
-                )
-                weights = paper_broker.sizing_weights(
-                    sizing, basket, scores=decision.scores, vols=vols, rank_power=rank_power
-                )
-                for sym in buys:
-                    if len(positions) >= max_pos or sym in positions:
-                        continue
-                    px = row.get(sym)
-                    if px is None or pd.isna(px) or px <= 0:
-                        continue
-                    px_fill = px * (1.0 + cost)     # buys fill above the quote
-                    shares = paper_broker.weighted_size(
-                        sizing, weights, sym, equity, px_fill, max_pos,
-                        srsr.cap_pct(cfg, sym),   # per-symbol: tighter for single stocks
-                    )
-                    shares = min(shares, cash / px_fill)  # never go negative
-                    if shares <= 0:
-                        continue
-                    cash -= shares * px_fill
-                    costs_paid += shares * px * cost
-                    traded += shares * px
-                    positions[sym] = {
-                        "shares": shares,
-                        "stop": px * (1 - srsr.stop_pct(cfg, sym) / 100.0),
-                        "peak": px,
-                    }
-                    n_trades += 1
+            order = {
+                "rebalance": is_rebalance,
+                "do_exit": is_rebalance or fast_exits,
+                "do_buy": (is_rebalance or fast_buys) and not (risk_off or buys_paused),
+                "buys": buys, "sells": sells,
+                "scores": decision.scores, "prices": prices,
+            }
+            if lag == 0:
+                execute(order, row)
+            else:
+                pending.append((i + lag, order))
 
         vals = [positions[s]["shares"] * row[s] for s in positions if not pd.isna(row.get(s))]
         n_held.append(len(vals))
@@ -370,6 +549,9 @@ def simulate(cfg: dict[str, Any], close, start_date=None, end_date=None,
         "avg_positions": float(np.mean(n_held)) if n_held else 0.0,
         "avg_effective_n": float(np.mean(eff_n)) if eff_n else 0.0,
         "avg_top_weight": float(np.mean(top_w)) if top_w else 0.0,
+        "n_brake_flattened": n_brake_flattened,
+        "pct_days_risk_off": days_risk_off / len(curve_equity),
+        "pct_days_buys_paused": days_buys_paused / len(curve_equity),
     })
 
     # SPY buy & hold over the same window (adjusted closes include dividends)
@@ -385,12 +567,57 @@ def simulate(cfg: dict[str, Any], close, start_date=None, end_date=None,
         "benchmark": spy_stats,
         "equity_curve": [(str(d.date()), round(v, 2)) for d, v in equity_s.items()],
         "benchmark_curve": [(str(d.date()), round(v, 2)) for d, v in spy_equity.items()],
+        "brake_log": brake_log,
         "assumptions": {
             "cost_bps_per_side": round(cost * 10_000, 2),
             "cash_rate": ex.rate_source(exec_cfg.get("cash_rate")),
             "risk_free": ex.rate_source(exec_cfg.get("risk_free")),
+            "timing": {
+                "rebalance_day": rebalance_day, "lag_bars": lag,
+                "daily_exits": bool(fast_exits), "daily_buys": bool(fast_buys),
+                "safety_brakes": brakes is not None,
+            },
         },
     }
+
+
+def _timing_text(t: dict[str, Any] | None) -> str:
+    if not t:
+        return "original"
+    parts = [
+        f"rebalance {t['rebalance_day']}",
+        "exits daily" if t["daily_exits"] else "exits weekly",
+        f"fills {t['lag_bars']} bar(s) after the signal" if t["lag_bars"] else "fills at the signal close",
+        "safety brakes on" if t["safety_brakes"] else "no safety brakes",
+    ]
+    return ", ".join(parts)
+
+
+def _print_modes(results: list[tuple[str, dict[str, Any]]]) -> None:
+    base = results[0][1]["strategy"]
+    spy = results[0][1]["benchmark"]
+    r0 = results[0][1]
+    console.print(f"\n[bold]Original timing vs the live app's timing[/]  {r0['start']} -> {r0['end']}\n")
+    t = Table(show_header=True, header_style="bold")
+    for col in ("variant", "CAGR", "vs original", "Max DD", "Sharpe", "Trades", "Avg % cash", "End $"):
+        t.add_column(col, justify="left" if col == "variant" else "right")
+    for label, r in results:
+        s = r["strategy"]
+        t.add_row(label, f"{s['cagr']:+.1%}", f"{(s['cagr'] - base['cagr']) * 100:+.1f} pts",
+                  f"{s['max_drawdown']:.1%}", f"{s['sharpe']:.2f}", str(s["n_trades"]),
+                  f"{s['pct_cash']:.0%}", f"${r['final_equity']:,.0f}")
+    t.add_row("SPY buy & hold", f"{spy['cagr']:+.1%}", "", f"{spy['max_drawdown']:.1%}",
+              f"{spy['sharpe']:.2f}", "1", "0%", "")
+    console.print(t)
+    live = results[-1][1]
+    if live.get("brake_log"):
+        console.print(f"\n[dim]Safety brakes fired {len(live['brake_log'])} time(s) in the live-like run; "
+                      f"first few: " + "; ".join(f"{e['date']} {e['event']}" for e in live["brake_log"][:5]) + "[/]")
+    console.print(
+        "\n[dim]Read it as: how much of the headline result depends on the backtest being "
+        "friendlier than the live app. A small gap = the old numbers were fair; a big gap = "
+        "re-judge past approvals. Daily bars only, so brakes react at the close, not intraday.[/]\n"
+    )
 
 
 def _print_report(r: dict[str, Any]) -> None:
@@ -400,6 +627,7 @@ def _print_report(r: dict[str, Any]) -> None:
         f"(start ${start_equity():,.0f} -> end ${r['final_equity']:,.0f})\n"
         f"[dim]net of {a['cost_bps_per_side']:g} bps/side costs · cash earns {a['cash_rate']} · "
         f"Sharpe vs {a['risk_free']}[/]\n"
+        f"[dim]timing: {_timing_text(a.get('timing'))}[/]\n"
     )
     t = Table(show_header=True, header_style="bold")
     t.add_column("metric"); t.add_column("SRSR", justify="right"); t.add_column("SPY buy&hold", justify="right")
@@ -434,6 +662,17 @@ def main() -> None:
     parser.add_argument("--config", help="path to a strategy yaml to backtest")
     parser.add_argument("--gross", action="store_true",
                         help="frictionless (no costs, no cash interest, raw Sharpe) — the old model")
+    parser.add_argument("--live-like", action="store_true",
+                        help="mirror the live worker: Friday rebalance, daily exits, fill next bar, safety brakes")
+    parser.add_argument("--rebalance-day", choices=REBALANCE_DAYS,
+                        help="monday (default, first bar of the week) or friday (last bar of the week)")
+    parser.add_argument("--lag", type=int, help="bars between signal and fill (default 0 = same close)")
+    parser.add_argument("--daily-exits", action="store_true",
+                        help="check rotation exits every day, not just at the weekly rebalance")
+    parser.add_argument("--brakes", action="store_true",
+                        help="turn on the live crash / drawdown / early-warning brakes (goal.yaml black_swan)")
+    parser.add_argument("--compare-modes", action="store_true",
+                        help="run original timing, each live difference alone, and all together; print a table")
     args = parser.parse_args()
 
     if args.config:
@@ -451,7 +690,22 @@ def main() -> None:
         console.print("[red]not a relative_strength_rotation config (backtester is rotation-only).[/]")
         return
     console.print(f"[dim]strategy: {cfg.get('name', 'active strategy.yaml')}[/]")
-    _print_report(run_backtest(cfg, args.years, ex.gross() if args.gross else None))
+    exec_cfg = ex.gross() if args.gross else None
+    if args.compare_modes:
+        results = compare_modes(cfg, args.years, exec_cfg,
+                                progress=lambda label: console.print(f"[dim]running: {label} ...[/]"))
+        _print_modes(results)
+        return
+    opts: dict[str, Any] = live_like_options() if args.live_like else {}
+    if args.rebalance_day:
+        opts["rebalance_day"] = args.rebalance_day
+    if args.lag is not None:
+        opts["lag"] = args.lag
+    if args.daily_exits:
+        opts["fast_exits"] = True
+    if args.brakes:
+        opts["brakes"] = brakes_from_goal()
+    _print_report(run_backtest(cfg, args.years, exec_cfg, **opts))
 
 
 if __name__ == "__main__":
