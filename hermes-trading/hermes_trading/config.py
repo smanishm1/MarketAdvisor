@@ -8,20 +8,34 @@ import yaml
 from .paths import GOAL_FILE, STRATEGY_FILE
 
 
+# What a missing key in goal.yaml falls back to. These match config/goal.example.yaml (the ETF
+# rotation). They used to be the old crypto numbers (5% / 8% drawdown / Sharpe 1.2 / -4%), which
+# silently applied to anyone whose goal.yaml lacked a key. See docs/GOAL-BAR.md.
+DEFAULT_GOAL: dict[str, Any] = {
+    "target_return_30d": 0.015,
+    "max_drawdown": 0.15,
+    "min_sharpe": 1.0,
+    "failure_below": -0.10,
+    "reflection_every": 8,
+    "one_variable_only": True,
+}
+DEFAULT_BLACK_SWAN: dict[str, Any] = {
+    "early_warn_day_pct": -0.05,
+    "crash_day_pct": -0.07,
+    "max_portfolio_drawdown_pct": 0.20,
+    "flatten_on_trigger": True,
+}
+
+
 def load_goal() -> dict[str, Any]:
     with GOAL_FILE.open(encoding="utf-8") as f:
         goal = yaml.safe_load(f) or {}
-    goal.setdefault("asset", "BTC/USDT")
-    goal.setdefault("target_return_30d", 0.05)
-    goal.setdefault("max_drawdown", 0.08)
-    goal.setdefault("min_sharpe", 1.2)
-    goal.setdefault("failure_below", -0.04)
-    goal.setdefault("reflection_every", 5)
-    goal.setdefault("one_variable_only", True)
+    goal.setdefault("asset", "BTC/USDT")   # only used by the legacy single-asset RSI path
+    for key, value in DEFAULT_GOAL.items():
+        goal.setdefault(key, value)
     bs = goal.setdefault("black_swan", {})
-    bs.setdefault("crash_day_pct", -0.07)
-    bs.setdefault("max_portfolio_drawdown_pct", 0.20)
-    bs.setdefault("flatten_on_trigger", True)
+    for key, value in DEFAULT_BLACK_SWAN.items():
+        bs.setdefault(key, value)
     return goal
 
 

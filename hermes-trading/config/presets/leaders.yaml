@@ -1,4 +1,8 @@
 # Phase-4 "Liquid Leaders" rotation — selectable preset.
+# ILLUSTRATIVE ONLY, NOT EVIDENCE: this basket was picked today, knowing these stocks did well, so
+# any backtest of it over past years is flattered by hindsight (survivorship). Several names also
+# have short histories, so the basket quietly grows over time. Don't use its results to judge the
+# strategy, and it does not fit an ETF-only IRA.
 # Same momentum engine as the ETF core, but a curated basket of liquid single-stock
 # leaders (AI infra, cloud, cyber, power, automation). Held more diversified than the
 # ETF version (more names, smaller each) to tame single-name risk, per the friend's

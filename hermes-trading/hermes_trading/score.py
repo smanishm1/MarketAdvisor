@@ -64,10 +64,11 @@ def score(
     mdd = max_drawdown(equity_curve or [])
     shp = sharpe(trades, rf_annual)
 
-    target = goal.get("target_return_30d", 0.05) or 0.05
-    max_dd = goal.get("max_drawdown", 0.08) or 0.08
-    min_shp = goal.get("min_sharpe", 1.2) or 1.2
-    floor = goal.get("failure_below", -0.04)
+    from .config import DEFAULT_GOAL   # same fallbacks as load_goal(), in one place
+    target = goal.get("target_return_30d", DEFAULT_GOAL["target_return_30d"]) or DEFAULT_GOAL["target_return_30d"]
+    max_dd = goal.get("max_drawdown", DEFAULT_GOAL["max_drawdown"]) or DEFAULT_GOAL["max_drawdown"]
+    min_shp = goal.get("min_sharpe", DEFAULT_GOAL["min_sharpe"]) or DEFAULT_GOAL["min_sharpe"]
+    floor = goal.get("failure_below", DEFAULT_GOAL["failure_below"])
 
     return_score = _clip(ret / target) if target else 0.0
     dd_score = _clip(1.0 - (mdd / max_dd)) if max_dd else 0.0   # 1 when no dd, ->neg when over

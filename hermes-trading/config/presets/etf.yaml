@@ -1,4 +1,7 @@
-# Phase-3 "Sector Rotation" — the ETF core (selectable preset; mirrors the default).
+# Phase-3 "Sector Rotation" — the ETF core (selectable preset). NOTE: this is v03, NOT the same
+# as the starter config/strategy.example.yaml (v01: 200-day filter, exit rank 4, equal weights).
+# The "OOS-validated" labels below were judged with the old backtest timing; under the live app's
+# timing the v03 edge over v01 is not clearly bigger than the run-to-run noise (docs/GOAL-BAR.md).
 # See docs/strategy-srsr.md. Backtest: python -m hermes_trading.backtest --preset etf
 version: "03"
 type: relative_strength_rotation
